@@ -193,8 +193,8 @@ CC_SYSTEM_APPEND = _env("CC_SYSTEM_APPEND") or (
     "reminders, or anything that must be looked up or done at that time (news, tweets, weather, prices, checks), "
     "schedule yourself instead: [[task: WHEN | PROMPT]] runs PROMPT once at WHEN (same formats as reminders) and "
     "[[task: cron MIN HOUR DAY MONTH WEEKDAY | PROMPT]] runs it repeatedly (5-field cron in the user's timezone, "
-    "0=Sunday, at most every 15 minutes). At that time a fresh session of you with read-only tools (web search/fetch, "
-    "reading files) runs PROMPT with no memory of this chat and your answer is posted here, pinging the user, so "
+    "0=Sunday, at most every 15 minutes). At that time a fresh session of you, read-only unless an owner allows more "
+    "(web search/fetch, reading files), runs PROMPT with no memory of this chat and your answer is posted here, pinging the user, so "
     "write PROMPT fully self-contained (names, handles, links, what to report and how briefly). Don't ask for "
     "confirmation first: the bot shows what was scheduled and /tasks cancels it. To delete files from the working directory "
     "(edit or full permission), put a line [[delete: relative/path]] in your final message; the bot deletes them "
@@ -786,9 +786,27 @@ def _schedule_job(task: dict) -> None:
                       replace_existing=True, coalesce=True, max_instances=1, misfire_grace_time=grace)
 
 
+def task_defaults(task: dict) -> dict:
+    """What a task runs on is pinned when it's created, so changing a chat's model later doesn't move it. Anything
+    not given (and tasks from before this existed) takes the chat's current choice."""
+    s = get_settings(task["channel_id"])
+    if task.get("engine") == "claude":
+        task.setdefault("backend", s["cc_backend"])
+        task.setdefault("model", s["cc_model"])
+        task.setdefault("workspace", s["workspace"])
+    else:
+        task.setdefault("model", s["local_model"])
+    task.setdefault("perm", "read")  # read | edit | full (Claude Code); the local model only ever gets web tools
+    task.setdefault("reminders", False)  # may set reminders when it runs (never tasks: no self-perpetuating chains)
+    task.setdefault("approved_by", None)  # the owner who last raised it (Claude Code, more than read, reminders)
+    return task
+
+
 def add_task(cron: str, prompt: str, description: str, channel_id: int, user_id: int, *,
-             at: datetime | None = None, engine: str = "local") -> dict:
-    """A scheduled prompt: recurring (cron) or once (at). engine: local model or Claude Code (read-only)."""
+             at: datetime | None = None, engine: str = "local", model: str | None = None,
+             backend: str | None = None, workspace: str | None = None) -> dict:
+    """A scheduled prompt: recurring (cron) or once (at), on a pinned engine + model. Starts read-only; owners can
+    widen it in /tasks."""
     if len(_tasks) >= TASK_MAX:
         raise ValueError(f"task limit reached ({TASK_MAX}); cancel one first")
     if not prompt.strip():
@@ -801,6 +819,11 @@ def add_task(cron: str, prompt: str, description: str, channel_id: int, user_id:
         "description": clip((description or prompt).strip(), 100),
         "channel_id": channel_id, "created_by": user_id, "created_at": now_local().isoformat(),
     }
+    for k, v in (("model", model), ("backend", backend if engine == "claude" else None),
+                 ("workspace", workspace if engine == "claude" else None)):
+        if v:
+            task[k] = v
+    task_defaults(task)
     _tasks[task["id"]] = task
     _schedule_job(task)
     _save_tasks()
@@ -829,9 +852,92 @@ def next_run(task_id: str) -> datetime | None:
     return getattr(job, "next_run_time", None)  # absent until the scheduler has started
 
 
+def task_authority(task: dict) -> bool:
+    """Claude Code, more than read-only, and reminders need an owner behind the task, checked again at every run:
+    its creator, or the owner who approved the change (someone removed from OWNER_IDS stops counting)."""
+    return is_owner(task["created_by"]) or (task.get("approved_by") is not None and is_owner(task["approved_by"]))
+
+
+def task_runs_on(t: dict) -> str:
+    """'💻 `qwen3.5:9b`' / '🤖 🦙 `qwen3.5:9b` · ✏️ Edit · 🔔 reminders'."""
+    if t.get("engine") == "claude":
+        be = t.get("backend", "anthropic")
+        text = f"🤖 {BACKENDS[be][0] + ' ' if be != 'anthropic' else ''}`{t.get('model')}`"
+    else:
+        text = f"💻 `{t.get('model')}`"
+    if t.get("perm", "read") != "read":
+        text += f" · {PERMS[t['perm']][0]} {PERMS[t['perm']][1]}"
+    if t.get("reminders"):
+        text += " · 🔔 reminders"
+    return text
+
+
+async def update_task(task_id: str, user_id: int, *, engine: str | None = None, backend: str | None = None,
+                      model: str | None = None, perm: str | None = None, reminders: bool | None = None) -> str:
+    """Change what a task runs on / may do. The one place these rules are checked, for every front end:
+    - the creator or an owner can move a task between local models (non-owners: only models the server lists);
+    - only owners can put it on Claude Code, give it more than read-only, or let it set reminders;
+    - full access never goes to Claude Code on Ollama (the local model gets no shell), and a task can never
+      schedule more tasks."""
+    t = _tasks.get(task_id)
+    if not t or not visible_to(t["created_by"], user_id):
+        return f"No task with id '{task_id}'."
+    owner = is_owner(user_id)
+    if t["created_by"] != user_id and not owner:
+        return "Only the task's creator or an owner can change it."
+    new = dict(t)
+    raised = False
+    if engine is not None:
+        if not model:
+            return "Pick a model."
+        if engine == "claude":
+            if not (CC_ENABLED and owner):
+                return "⛔ Only owners can put a task on Claude Code."
+            if backend not in BACKENDS:
+                return f"Unknown Claude Code backend '{backend}'."
+            new.update(engine="claude", backend=backend, model=model,
+                       workspace=t.get("workspace") or get_settings(t["channel_id"])["workspace"])
+            raised = True
+        elif engine == "local":
+            if not owner and model not in await list_local_models():
+                return f"⚠️ `{clip(model, 100)}` isn't one of the server's models."
+            new.update(engine="local", model=model, perm="read")
+            new.pop("backend", None)
+            new.pop("workspace", None)
+        else:
+            return f"Unknown engine '{engine}'."
+    if perm is not None:
+        if not owner:
+            return "⛔ Only owners can change what a task may do."
+        if perm not in PERMS:
+            return f"Unknown permission '{perm}'."
+        if new["engine"] != "claude" and perm != "read":
+            return "The local model only gets web search and page fetch (and reminders, if allowed)."
+        new["perm"] = perm
+        raised = raised or perm != "read"
+    if reminders is not None:
+        if not owner:
+            return "⛔ Only owners can let a task set reminders."
+        new["reminders"] = bool(reminders)
+        raised = raised or bool(reminders)
+    if new["engine"] == "claude" and new["perm"] == "full" and new.get("backend") == "ollama":
+        return "⛔ Full access isn't available on the Ollama backend: the local model never gets a shell. Use Edit."
+    if raised:
+        new["approved_by"] = user_id
+    t.update(new)
+    for k in ("backend", "workspace"):
+        if k not in new:
+            t.pop(k, None)
+    _save_tasks()
+    note_event("task", t["description"], channel_id=t["channel_id"], user_id=user_id, status="changed", ref=t["id"],
+               engine=t["engine"], model=t["model"], perm=t["perm"], reminders=t["reminders"] or None)
+    return f"✅ `{t['id']}` now runs on {task_runs_on(t)}."
+
+
 def load_tasks() -> None:
     for task in list(_tasks.values()):
         try:
+            task_defaults(task)
             _schedule_job(task)
         except Exception as e:
             log.warning("Dropping task %s: %s", task.get("id"), e)
@@ -844,19 +950,20 @@ def task_label(t: dict) -> str:
     """How a task is shown in Discord: 'once, <time> (in 5 hours)' or 'cron `0 8 * * *` · next in 5 hours'."""
     nr = next_run(t["id"])
     rel = discord.utils.format_dt(nr, "R") if nr else "—"
-    eng = "🤖" if t.get("engine") == "claude" else "💻"
     if t.get("at"):
-        return f"{eng} once, {discord.utils.format_dt(datetime.fromisoformat(t['at']), 'f')} ({rel})"
-    return f"{eng} cron `{t['cron']}` · next {rel}"
+        return f"{task_runs_on(t)} · once, {discord.utils.format_dt(datetime.fromisoformat(t['at']), 'f')} ({rel})"
+    return f"{task_runs_on(t)} · cron `{t['cron']}` · next {rel}"
 
 
 TASK_RE = re.compile(r"\[\[task:\s*([^\]\n|]+?)\s*\|\s*([^\]\n]+?)\s*\]\]", re.I)
 TASK_PER_REPLY = 3
 
 
-def extract_tasks(text: str, channel_id: int, user_id: int) -> tuple[str, list[str]]:
-    """[[task: WHEN | PROMPT]] / [[task: cron ... | PROMPT]] markers in Claude's reply -> Claude Code tasks."""
+def extract_tasks(text: str, channel_id: int, user_id: int, snap: "CCSnap | None" = None) -> tuple[str, list[str]]:
+    """[[task: WHEN | PROMPT]] / [[task: cron ... | PROMPT]] markers in Claude's reply -> Claude Code tasks, pinned to
+    the backend, model and workspace of the job that wrote them."""
     lines: list[str] = []
+    pin = dict(backend=snap.backend, model=snap.model, workspace=snap.workspace) if snap else {}
     for i, m in enumerate(TASK_RE.finditer(text)):
         if i >= TASK_PER_REPLY:
             lines.append(f"⚠️ only {TASK_PER_REPLY} tasks per reply; the rest were ignored")
@@ -864,9 +971,9 @@ def extract_tasks(text: str, channel_id: int, user_id: int) -> tuple[str, list[s
         when, prompt = m.group(1).strip(), m.group(2).strip()
         try:
             if when.lower().startswith("cron"):
-                t = add_task(when[4:].strip(" :"), prompt, prompt, channel_id, user_id, engine="claude")
+                t = add_task(when[4:].strip(" :"), prompt, prompt, channel_id, user_id, engine="claude", **pin)
             else:
-                t = add_task("", prompt, prompt, channel_id, user_id, at=parse_when(when), engine="claude")
+                t = add_task("", prompt, prompt, channel_id, user_id, at=parse_when(when), engine="claude", **pin)
             lines.append(f"🗓️ Task `{t['id']}` scheduled: {task_label(t)}: {clip(prompt, 150)}")
         except ValueError as e:
             lines.append(f"⚠️ Task not scheduled: {e}")
@@ -1143,6 +1250,7 @@ class ToolCtx:
     proposal: dict | None = None
     max_chars: int = 0  # largest request sent to the model (for the context estimate)
     reminders: list[str] = field(default_factory=list)  # confirmation lines for reminders set in this reply
+    model: str = ""  # the model answering (a task it schedules runs on the same one)
 
 
 @dataclass
@@ -1164,7 +1272,7 @@ async def execute_tool(name: str, args: dict, ctx: ToolCtx) -> str:
         if name == "schedule_task":
             at = str(args.get("at") or "").strip()
             t = add_task(str(args.get("cron") or ""), str(args.get("prompt", "")), str(args.get("description", "")),
-                         ctx.channel_id, ctx.user_id, at=parse_when(at) if at else None)
+                         ctx.channel_id, ctx.user_id, at=parse_when(at) if at else None, model=ctx.model or None)
             return f"Scheduled task {t['id']} ('{t['description']}'), next run {next_run(t['id'])}."
         if name == "list_tasks":
             return tasks_text(ctx.user_id)
@@ -1224,6 +1332,7 @@ def stamped(prompt: str) -> str:
 
 
 async def run_local(prompt: str, model: str, ctx: ToolCtx, history: list[dict] | None) -> LocalResult:
+    ctx.model = ctx.model or model
     extra = ""
     if "propose_claude_code" in ctx.tools:
         extra = ("\nIf the request needs the user's computer (files, code, running commands), call "
@@ -1963,6 +2072,7 @@ class CCJob:
     out: Any = None  # where a chat reply goes (Out: reply to the user's message or the slash command)
     notices: list[str] = field(default_factory=list)  # what the bot did for [[remind:]] / [[delete:]] markers
     scheduled: bool = False  # started by a scheduled task (can't schedule more)
+    reminders_ok: bool = False  # a scheduled job whose task may set reminders
     ctx_limit: int | None = None  # the model's real context window (Ollama), when known
     ctx_approx: bool = False  # context_tokens is an estimate
 
@@ -2235,12 +2345,18 @@ async def _finalize(job: CCJob) -> None:
     if r0 and job.outcome() == "success" and any(rx.search(text) for rx in (REMIND_RE, TASK_RE, DELETE_RE)):
         ch_id = getattr(job.channel, "id", 0)
         if job.scheduled:  # no self-perpetuating chains from unattended runs
-            if REMIND_RE.search(text) or TASK_RE.search(text):
-                text = TASK_RE.sub("", REMIND_RE.sub("", text)).strip()
-                job.notices.append("⚠️ scheduled runs can't set reminders or tasks")
+            if TASK_RE.search(text):
+                text = TASK_RE.sub("", text).strip()
+                job.notices.append("⚠️ scheduled runs can't create tasks")
+            if job.reminders_ok:
+                text, lines = extract_reminders(text, ch_id, job.user_id)
+                job.notices += lines
+            elif REMIND_RE.search(text):
+                text = REMIND_RE.sub("", text).strip()
+                job.notices.append("⚠️ this task isn't allowed to set reminders (an owner can allow it in /tasks)")
         else:
             text, job.notices = extract_reminders(text, ch_id, job.user_id)
-            text, lines = extract_tasks(text, ch_id, job.user_id)
+            text, lines = extract_tasks(text, ch_id, job.user_id, job.snap)
             job.notices += lines
         text, deletes, lines = plan_deletes(text, job.snap)
         job.notices += lines
@@ -2314,9 +2430,10 @@ _last_job: dict[int, CCJob] = {}  # per channel, for /stop and /log
 
 
 async def start_cc_job(channel: discord.abc.Messageable, task: str, snap: CCSnap, user_id: int, *,
-                       out: "Out | None" = None, chat: bool = False, scheduled: bool = False) -> CCJob:
+                       out: "Out | None" = None, chat: bool = False, scheduled: bool = False,
+                       reminders_ok: bool = False) -> CCJob:
     job = CCJob(channel=channel, task=task, snap=snap, user_id=user_id, chat=chat, out=out or Out(channel),
-                scheduled=scheduled)
+                scheduled=scheduled, reminders_ok=reminders_ok)
     if snap.note:
         job.lines.append(snap.note)
     if not chat:  # chat mode shows only the typing indicator, then a plain reply
@@ -2917,20 +3034,33 @@ async def run_scheduled_task(task_id: str) -> None:
     head = f"⏰ <@{uid}> **{task['description']}** · `{task_id}`"
     if task.get("at") and now_local() - datetime.fromisoformat(task["at"]) > REMINDER_LATE:
         head += f"\n-# late: was due {discord.utils.format_dt(datetime.fromisoformat(task['at']), 'f')} (bot was offline or the laptop was asleep)"
+    task_defaults(task)
+    authority = task_authority(task)  # re-checked every run: OWNER_IDS may have changed since it was allowed
+    reminders_ok = task["reminders"] and authority
+    if task["reminders"] and not authority:
+        head += "\n-# no owner behind this task any more: running without reminders"
     if task.get("engine") == "claude":
         out = Out(channel, prefix=head, ping=uid)
-        if CC_ENABLED and is_owner(uid):
-            # Unattended: fresh session, read-only tools (web search/fetch, read files), normal budgets apply.
-            snap = replace(snapshot(task["channel_id"]), perm="read", resume=None, note=None)
+        if CC_ENABLED and authority:
+            # Unattended: fresh session, on the task's own backend/model/workspace; normal budgets apply
+            perm = task["perm"]
+            if perm == "full" and task["backend"] == "ollama":
+                perm = "edit"  # the local model never gets a shell
+            ws = task["workspace"] if task["workspace"] in WORKSPACES else next(iter(WORKSPACES))
+            snap = CCSnap(task["backend"], task["model"], perm, ws)
             if blocked := budget_block(snap):
                 await out(content=f"{blocked}\n-# scheduled task skipped")
                 return
-            log.info("Task %s: running with Claude Code", task_id)
-            await start_cc_job(channel, task["prompt"], snap, uid, out=out, chat=True, scheduled=True)
+            log.info("Task %s: running with Claude Code (%s/%s, %s)", task_id, snap.backend, snap.model, snap.perm)
+            await start_cc_job(channel, task["prompt"], snap, uid, out=out, chat=True, scheduled=True,
+                               reminders_ok=reminders_ok)
             return
-        head += "\n-# Claude Code isn't available for this task's creator; used the local model."
-    model = get_settings(task["channel_id"])["local_model"]
-    ctx = ToolCtx(task["channel_id"], task["created_by"], READONLY_TOOLS)  # read-only, no new tasks
+        head += "\n-# Claude Code isn't available for this task (it needs an owner); used the local model."
+        model = get_settings(task["channel_id"])["local_model"]
+    else:
+        model = task["model"]
+    tools = READONLY_TOOLS + (["set_reminder", "list_reminders"] if reminders_ok else [])  # never schedule_task
+    ctx = ToolCtx(task["channel_id"], task["created_by"], tools)
     started = time.monotonic()
     try:
         with activity("task", task["description"], task["channel_id"], uid, model=model):
@@ -2939,6 +3069,8 @@ async def run_scheduled_task(task_id: str) -> None:
         note_event("task", task["description"], channel_id=task["channel_id"], user_id=uid, status="ran",
                    ref=task_id, engine="local", model=model, seconds=round(time.monotonic() - started, 1),
                    tools=res.tools_used or None, reply=clip(strip_think(text), 600))
+        if ctx.reminders:
+            text += "\n" + "\n".join(ctx.reminders)
         if res.tools_used:
             text += "\n-# used: " + ", ".join(res.tools_used)
     except Exception as e:
@@ -3199,12 +3331,169 @@ class TasksView(GuardedView):
             sel = discord.ui.Select(custom_id="t:cancel", placeholder="🗑️ Cancel a reminder or task…", options=opts[:25])
             sel.callback = self.on_cancel
             self.add_item(sel)
+        tasks = my_tasks(user_id)
+        if tasks:
+            edit = discord.ui.Select(custom_id="t:edit", placeholder="⚙️ Change what a task runs on / may do…", options=[
+                discord.SelectOption(label=clip(f"{t['id']} · {t['description']}", 100), value=t["id"],
+                                     emoji="🤖" if t.get("engine") == "claude" else "💻",
+                                     description=clip(f"{t.get('model')} · {PERMS[t.get('perm', 'read')][1]}"
+                                                      + (" · reminders" if t.get("reminders") else ""), 100))
+                for t in tasks[:25]])
+            edit.callback = self.on_edit
+            self.add_item(edit)
 
     async def on_cancel(self, inter):
         value = inter.data["values"][0]
         msg = cancel_reminder(value, inter.user.id) if value in _reminders else cancel_task(value, inter.user.id)
         self.stop()
         await inter.response.edit_message(content=msg, embed=tasks_embed(self.user_id), view=TasksView(self.user_id))
+
+    async def on_edit(self, inter):
+        tid = inter.data["values"][0]
+        t = _tasks.get(tid)
+        if not t or not visible_to(t["created_by"], inter.user.id):
+            await inter.response.edit_message(content=f"No task with id '{tid}'.", embed=tasks_embed(self.user_id),
+                                              view=TasksView(self.user_id))
+            return
+        self.stop()
+        await inter.response.edit_message(content=None, embed=task_embed(t),
+                                          view=await TaskEditView.build(tid, inter.user.id, self.user_id))
+
+
+def task_embed(t: dict, note: str | None = None) -> discord.Embed:
+    full = t.get("perm") == "full"
+    e = discord.Embed(title=f"⚙️ Task `{t['id']}`: {clip(t['description'], 200)}", description=note,
+                      color=COLOR_ERR if full else COLOR_RUN)
+    e.add_field(name="When", value=task_label(t), inline=False)
+    e.add_field(name="Prompt", value=clip(t["prompt"], 1000), inline=False)
+    if t.get("engine") == "claude":
+        p = PERMS[t.get("perm", "read")]
+        e.add_field(name="May", value=f"{p[0]} **{p[1]}**: {p[2]}", inline=False)
+        e.add_field(name="Workspace", value=f"`{t.get('workspace')}`")
+    else:
+        e.add_field(name="May", value="🌐 web search and page fetch", inline=False)
+    e.add_field(name="Reminders", value="🔔 may set reminders" if t.get("reminders") else "🔕 can't set reminders")
+    e.add_field(name="Chat", value=where(t["channel_id"]))
+    e.set_footer(text="Runs in a fresh session with no chat memory. Owners choose Claude Code, permissions and "
+                      "reminders; a task can never schedule more tasks.")
+    return e
+
+
+class TaskEditView(GuardedView):
+    """One task: what it runs on (engine + model) and what it may do. update_task() checks every change again."""
+
+    def __init__(self, task_id: str, viewer: int, list_user: int | None, choices: list[tuple[str, str, str]]):
+        super().__init__(timeout=600)
+        self.task_id, self.list_user = task_id, list_user
+        t = _tasks[task_id]
+        owner = is_owner(viewer)
+        current = (f"claude|{t.get('backend')}|{t.get('model')}" if t.get("engine") == "claude"
+                   else f"local||{t.get('model')}")
+        opts, seen = [], set()
+        for value, label, emoji in choices:
+            if value not in seen and len(value) <= 100:
+                seen.add(value)
+                opts.append(discord.SelectOption(label=clip(label, 100), value=value, emoji=emoji,
+                                                 default=(value == current)))
+        if current not in seen:  # its model may not be listed right now (server down, custom name)
+            opts.insert(0, discord.SelectOption(label=clip(f"{t.get('model')} (current)", 100), value=current[:100],
+                                                default=True, emoji="🤖" if t.get("engine") == "claude" else "💻"))
+        runs = discord.ui.Select(custom_id="te:model", placeholder="Runs on…", options=opts[:25])
+        runs.callback = self.on_model
+        self.add_item(runs)
+        if owner and t.get("engine") == "claude":
+            perm = discord.ui.Select(custom_id="te:perm", placeholder="May…", options=[
+                discord.SelectOption(label=f"May: {lbl}", value=k, emoji=em, description=clip(d, 100),
+                                     default=(k == t.get("perm", "read")))
+                for k, (em, lbl, d) in PERMS.items() if not (k == "full" and t.get("backend") == "ollama")])
+            perm.callback = self.on_perm
+            self.add_item(perm)
+        if owner:
+            on = bool(t.get("reminders"))
+            rem = discord.ui.Button(custom_id="te:rem", label="Reminders: turn off" if on else "Reminders: allow",
+                                    emoji="🔕" if on else "🔔", style=discord.ButtonStyle.secondary)
+            rem.callback = self.on_reminders
+            self.add_item(rem)
+        back = discord.ui.Button(custom_id="te:back", label="Back", emoji="⬅️", style=discord.ButtonStyle.primary)
+        back.callback = self.on_back
+        self.add_item(back)
+
+    @classmethod
+    async def build(cls, task_id: str, viewer: int, list_user: int | None) -> "TaskEditView":
+        """Choices: the local server's models for everyone; Claude Code's backends and models for owners."""
+        local = await _quick(list_local_models(), _model_cache[1])
+        choices = [(f"local||{m}", f"Local · {m}", "💻") for m in local]
+        if CC_ENABLED and is_owner(viewer):
+            backends = [b for b in BACKENDS if b != "custom" or CC_CUSTOM_BASE_URL]
+            lists = await asyncio.gather(*(_quick(cc_models(b), []) for b in backends))
+            for b, models in zip(backends, lists):
+                choices += [(f"claude|{b}|{m}", f"Claude Code · {b} · {m}", "🤖") for m in models]
+        return cls(task_id, viewer, list_user, choices)
+
+    async def interaction_check(self, inter: discord.Interaction) -> bool:
+        if not await super().interaction_check(inter):
+            return False
+        t = _tasks.get(self.task_id)
+        if t and t["created_by"] != inter.user.id and not is_owner(inter.user.id):
+            await inter.response.send_message("Only the task's creator or an owner can change it.", ephemeral=True)
+            return False
+        return True
+
+    async def _show(self, inter, note: str) -> None:
+        self.stop()
+        t = _tasks.get(self.task_id)
+        if not t:  # cancelled (or a one-shot that ran) meanwhile
+            await inter.response.edit_message(content=note, embed=tasks_embed(self.list_user),
+                                              view=TasksView(self.list_user))
+            return
+        await inter.response.edit_message(content=None, embed=task_embed(t, note),
+                                          view=await TaskEditView.build(self.task_id, inter.user.id, self.list_user))
+
+    async def on_model(self, inter):
+        engine, backend, model = (inter.data["values"][0].split("|", 2) + ["", ""])[:3]
+        await self._show(inter, await update_task(self.task_id, inter.user.id, engine=engine,
+                                                  backend=backend or None, model=model))
+
+    async def on_perm(self, inter):
+        perm = inter.data["values"][0]
+        if perm == "full" and is_owner(inter.user.id):  # unattended shell access: confirm first
+            self.stop()
+            e = discord.Embed(title="⚠️ Give this task full access?", color=COLOR_ERR, description=(
+                "Every time it runs, nobody watching, Claude Code can run **any command** on this laptop in the "
+                "workspace and beyond, without asking. Only do this for a prompt you wrote and trust.\n\n"
+                f"**Prompt:** {clip(_tasks[self.task_id]['prompt'], 1500)}"))
+            await inter.response.edit_message(embed=e, view=TaskFullConfirmView(self.task_id, self.list_user))
+            return
+        await self._show(inter, await update_task(self.task_id, inter.user.id, perm=perm))
+
+    async def on_reminders(self, inter):
+        t = _tasks.get(self.task_id)
+        await self._show(inter, await update_task(self.task_id, inter.user.id,
+                                                  reminders=not (t or {}).get("reminders")))
+
+    async def on_back(self, inter):
+        self.stop()
+        await inter.response.edit_message(content=None, embed=tasks_embed(self.list_user), view=TasksView(self.list_user))
+
+
+class TaskFullConfirmView(GuardedView):
+    owner_all = True
+
+    def __init__(self, task_id: str, list_user: int | None):
+        super().__init__(timeout=120)
+        self.task_id, self.list_user = task_id, list_user
+        go = discord.ui.Button(custom_id="tf:go", label="Yes, full access", emoji="⚠️", style=discord.ButtonStyle.danger)
+        go.callback = self.on_go
+        back = discord.ui.Button(custom_id="tf:back", label="Back", emoji="⬅️", style=discord.ButtonStyle.secondary)
+        back.callback = self.on_back
+        self.add_item(go)
+        self.add_item(back)
+
+    async def on_go(self, inter):
+        await TaskEditView._show(self, inter, await update_task(self.task_id, inter.user.id, perm="full"))
+
+    async def on_back(self, inter):
+        await TaskEditView._show(self, inter, "Unchanged.")
 
 
 class ReminderView(GuardedView):
@@ -3686,8 +3975,8 @@ async def schedule_cmd(inter: discord.Interaction, cron: str, prompt: str):
     nr = next_run(t["id"])
     await inter.response.send_message(
         f"⏰ Scheduled `{t['id']}`: {t['description']}\ncron `{t['cron']}` · next {discord.utils.format_dt(nr, 'F') if nr else '—'}\n"
-        + ("-# Runs with Claude Code, read-only (web search, reading files), in a fresh session; you get pinged."
-           if t["engine"] == "claude" else "-# Runs on the local model with read-only tools (search + fetch)."))
+        + f"-# Runs on {task_runs_on(t)}, read-only, in a fresh session; you get pinged. /tasks changes the model "
+          "or what it may do.")
 
 
 @bot.tree.command(name="remind", description=f"One-time reminder: pings you here at that time ({TIMEZONE})")

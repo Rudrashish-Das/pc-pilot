@@ -118,10 +118,23 @@ Just ask: "remind me to take my meds in 10 min", "remind me at 6pm to call mum",
 
 Ask for something that has to be looked up or done later, and Claude Code schedules itself: "8am today tell me the latest tweets from X, Y and Z", "every weekday at 9 give me a news brief", "at 6pm check if the match started". A grey line under the reply shows the task and when it runs.
 
-- At that time a **fresh** Claude Code session runs the prompt in **read-only** mode (web search/fetch, reading workspace files), posts the answer in the same channel and pings you. The usual per-job and daily budgets apply; if the daily cap is reached, the run is skipped and you're told.
+- At that time a **fresh** session runs the prompt in **read-only** mode (web search/fetch, reading workspace files), posts the answer in the same channel and pings you. The usual per-job and daily budgets apply; if the daily cap is reached, the run is skipped and you're told.
 - It has no memory of the chat, so Claude writes the prompt self-contained (names, handles, what to report).
-- One-time tasks run once and disappear; repeating ones use cron (at most every 15 minutes). A scheduled run can't create more reminders or tasks.
+- One-time tasks run once and disappear; repeating ones use cron (at most every 15 minutes). A scheduled run can never create more tasks.
 - `/tasks` lists and cancels them (🤖 = Claude Code, 💻 = local model). `/schedule` creates a repeating one directly and uses the channel's engine.
+
+### Which model runs a task, and what it may do
+Each task keeps the engine and model it was created with. A task the local model scheduled runs on that same model. One Claude Code scheduled runs on that job's backend, model and workspace. `/schedule` uses the chat's current choice. Changing a chat's model later doesn't move existing tasks.
+
+`/tasks` → **⚙️ Change what a task runs on / may do** opens one task:
+
+| Control | Who | What it does |
+|---|---|---|
+| **Runs on** | the task's creator, or an owner | Picks the local model it runs on. Non-owners can only pick models the server lists. Owners can also pick any Claude Code backend and model, e.g. a news brief on `haiku` and the weather on local `qwen3.5:9b` |
+| **May** | owners, Claude Code tasks only | 🔍 Read-only (the default), ✏️ Edit (can write files in its workspace) or ⚠️ Full access (any command, with nobody watching; asks you to confirm first). Full access isn't offered on the Ollama backend: the local model never gets a shell |
+| **Reminders** | owners | Lets the task set reminders when it runs, e.g. "check the forecast at 7; if it'll rain, remind me at 8 to take an umbrella". Off by default |
+
+The local model always gets only web search and page fetch, plus reminders if they're allowed. The owner who allowed Claude Code, more than read-only, or reminders is recorded with the task and checked again on every run. If that person is no longer in `OWNER_IDS`, and the creator isn't an owner either, the task falls back to the local model, read-only, and says so.
 - Every message to Claude Code starts with the current date and time in `TIMEZONE`, so "today", "tonight" and "8am" mean your time, not UTC.
 
 ## Laptop power (`/power`)

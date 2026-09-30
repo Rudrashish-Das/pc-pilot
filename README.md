@@ -248,7 +248,7 @@ Your settings, tasks, reminders and logs are in `data/` (or your Postgres databa
 | New Claude Code session | `/panel` → 🆕 | `/new` |
 | Reminders | "remind me in 10 min to…" or `/remind` | same, or `/remind in 10 min \| take meds` |
 | Scheduled prompts | "every weekday at 9 give me a news brief" or `/schedule` | same, or `/schedule 0 9 * * 1-5 \| prompt` |
-| List and cancel them | `/tasks` | `/tasks` |
+| List and cancel them, or choose the model a task runs on and what it may do | `/tasks` | `/tasks` |
 | Free the GPU | `/unload` | `/unload` |
 | Lock / sleep / hibernate / restart / shut down the laptop (owners) | `/power` | `/power` |
 | Web dashboard link (owners) | `/dashboard` | `/dashboard` (private chat) |

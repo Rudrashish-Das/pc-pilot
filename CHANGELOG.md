@@ -3,6 +3,12 @@
 Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `bot_v22.py`). From 0.23.0 on, git history is the record.
 
 ## Unreleased
+- Scheduled tasks are pinned to the engine and model that created them, and each has its own permissions. `/tasks` → ⚙️ changes both:
+  - the model a task runs on: the creator can pick among local models, and owners can also pick any Claude Code backend and model;
+  - read-only, edit or full access for Claude Code tasks (owners only; full access asks you to confirm and isn't offered on Ollama);
+  - whether the task may set reminders (owners only).
+
+  Tasks still never create tasks. The approving owner is checked again on every run. Existing tasks take their chat's current settings.
 - The dashboard has a name: the bot announces `llmbot.local` on your network (mDNS, `DASHBOARD_NAME`), pointing at the laptop's current Wi-Fi address, so `http://llmbot.local:8765` keeps working when the IP changes. `/dashboard` links use the name, with the IP as a fallback; `bot_control.ps1 firewall` also opens UDP 5353 and warns when the Wi-Fi is set to Public.
 - The bot can come back after `/power` → Restart without anyone signing in. Run `bot_control.ps1 boot` once, as administrator: it registers a scheduled task that starts the bot at boot, as you, with no stored password. Startup apps only ran at sign-in, so a restarted laptop waited at the lock screen with the bot offline.
   - The bot starts `ollama serve` when nothing answers on this PC's Ollama port (`OLLAMA_AUTOSTART`, on by default).

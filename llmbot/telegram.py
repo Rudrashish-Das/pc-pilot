@@ -859,9 +859,8 @@ class Telegram:
             except ValueError as e:
                 await out(content=f"⚠️ {e}")
                 return
-            await out(content=f"⏰ Scheduled `{t['id']}`: {core.task_label(t)}\n-# " + (
-                "Runs with Claude Code, read-only, in a fresh session." if engine == "claude"
-                else "Runs on the local model with web search."))
+            await out(content=f"⏰ Scheduled `{t['id']}`: {core.task_label(t)}\n-# Read-only, in a fresh session. "
+                              "/tasks changes the model or what it may do.")
         elif cmd == "reset":
             core.forget_history(cid)
             await out(content="🧹 Local chat history cleared.")
