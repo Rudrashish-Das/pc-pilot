@@ -620,7 +620,7 @@ function renderSchedule() {
     h("div", { class: "head" }, h("span", {}, "⏰ " + when(iso(r.when))), h("span", { class: "badge run" }, until(iso(r.when))), h("span", { class: "t" }, r.id)),
     h("div", { class: "body" }, r.text),
     h("div", { class: "small muted" }, [r.who, r.where].filter(Boolean).join(" · ")))) : h("div", { class: "empty" }, "No reminders."));
-  put($("tasks"), st.tasks.length ? st.tasks.map((t) => h("div", { class: "item", "data-expand": "1", onclick: (ev) => ev.currentTarget.classList.toggle("open") },
+  put($("tasks"), st.tasks.length ? st.tasks.map((t) => openable("t:" + t.id, h("div", { class: "item", "data-expand": "1" },
     h("div", { class: "head" }, h("span", {}, (t.engine === "claude" ? "🤖 " : "💻 ") + (t.cron ? "cron " + t.cron : "once")),
       t.next ? h("span", { class: "badge run" }, "next " + until(iso(t.next))) : null, h("span", { class: "t" }, t.id)),
     h("div", { class: "body" }, t.description),
@@ -631,8 +631,20 @@ function renderSchedule() {
     h("div", { class: "small muted" }, [t.next ? when(iso(t.next)) : null, t.who, t.where].filter(Boolean).join(" · ")),
     h("div", { class: "more" }, t.prompt,
       t.workspace || t.approved_by ? h("div", { class: "mono", style: "margin-top:6px" },
-        [t.workspace ? "workspace " + t.workspace : null, t.approved_by ? "approved by " + t.approved_by : null].filter(Boolean).join(" · ")) : null)))
+        [t.workspace ? "workspace " + t.workspace : null, t.approved_by ? "approved by " + t.approved_by : null].filter(Boolean).join(" · ")) : null))))
     : h("div", { class: "empty" }, "No scheduled prompts."));
+}
+
+// Lists are rebuilt on every refresh, so which items are expanded is remembered here, by a stable key.
+S.open = new Set();
+function openable(key, el) {
+  if (S.open.has(key)) el.classList.add("open");
+  el.addEventListener("click", () => {
+    if (getSelection().toString()) return;  // selecting text to copy isn't a click to collapse
+    el.classList.toggle("open");
+    if (el.classList.contains("open")) S.open.add(key); else S.open.delete(key);
+  });
+  return el;
 }
 
 async function loadOlder() {
@@ -664,8 +676,7 @@ async function loadJobs(more) {
       h("div", { class: "body clip" }, j.prompt || ""),
       h("div", { class: "small muted", style: "margin-top:3px" }, [usd(j.cost_usd), j.seconds != null ? dur(j.seconds) : null, j.turns != null ? j.turns + " turns" : null, j.perm, j.backend].filter(Boolean).join(" · ")),
       h("div", { class: "more mono" }, `job ${j.job_id} · session ${j.session_id || "—"} · session total ${usd(j.session_cost_usd)} · ${j.context_tokens || "?"} ctx tokens`));
-    el.addEventListener("click", () => el.classList.toggle("open"));
-    return el;
+    return openable("j:" + (j.job_id || "") + (j.finished_at || ""), el);
   }) : h("div", { class: "empty" }, "No Claude Code jobs recorded yet."));
 }
 
