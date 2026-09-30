@@ -171,7 +171,17 @@ It refreshes every 3 seconds while open and pauses when the tab is in the backgr
 
 **The name `llmbot.local`:** the bot announces it on the network over mDNS (like printers and Chromecasts), pointing at the laptop's current Wi-Fi address, and re-announces within a minute if that address changes. So the bookmark keeps working when the router hands the laptop a new IP. Change it with `DASHBOARD_NAME` (empty turns it off). iPhones, Macs, Windows, Linux and Android 12+ resolve `.local` names; if yours doesn't, use the IP link (and a DHCP reservation in your router keeps that IP fixed).
 
-**Security:** the dashboard shows your prompts and the bot's replies, so it needs the access key (`DASHBOARD_TOKEN`, or the random one in `data/dashboard.key`; delete that file and restart to change it). It only answers this PC, private LAN addresses and Tailscale (100.64.0.0/10); requests from public internet addresses are refused even with the key. It's plain HTTP, so someone on the same Wi-Fi who can watch the traffic could see what's on it: fine at home, not on a shared network. It's read-only: nothing on the page can start, stop or change anything. Set `DASHBOARD_HOST=127.0.0.1` to keep it to the laptop, or `DASHBOARD_PORT=0` to turn it off.
+**Security:** the dashboard shows your prompts and the bot's replies, so it needs the access key (`DASHBOARD_TOKEN`, or the random one in `data/dashboard.key`; delete that file and restart to change it). It only answers this PC, private LAN addresses and Tailscale (100.64.0.0/10); requests from public internet addresses are refused even with the key. It's plain HTTP, so someone on the same Wi-Fi who can watch the traffic could see what's on it: fine at home, not on a shared network. The status tabs only read; the **Chat** tab (below) acts as you. Set `DASHBOARD_HOST=127.0.0.1` to keep it to the laptop, or `DASHBOARD_PORT=0` to turn it off.
+
+### Chat from the dashboard
+
+The **Chat** tab is a third way to talk to the bot, next to Discord and Telegram, on the same backend. It goes over your Wi-Fi only, so it also works **without internet**: the local model through Ollama, Claude Code on the Ollama backend, reminders and scheduled prompts all keep working. (Web search, Claude Code on Anthropic, Discord and Telegram need the internet, of course.)
+
+- Each chat has its own engine, model, Claude Code session and memory. ⚙️ opens `/panel` right in the chat: its menus and buttons work like on Discord, and so do confirmations, Stop, reminders' ✅/💤 and `/tasks`. Other commands: `/help`, `/claude`, `/local`, `/new`, `/compact`, `/stop`, `/remind`, `/reset`, `/unload`, `/power`.
+- 📎 attaches images, PDFs and code for Claude Code. Files the bot sends back appear in the chat (images inline, others as downloads) and are kept 30 days in `data/webchat_files`.
+- While Claude Code works, the chat shows its steps live. Chats and their last 300 messages are kept (in `data/webchat.json`, or Postgres), up to 50 chats. Buttons stop working when the bot restarts, as on Discord.
+- **Who you are there:** `DASHBOARD_CHAT=owner` (default) makes whoever has the access key an owner: Claude Code (if you've set `OWNER_IDS`, which turns Claude Code on at all) and `/power`. `user` gives only the local model; `off` hides the chat.
+- **Starting without internet:** with the chat on, the bot no longer waits for discord.com at startup or exits when it can't reach it. The dashboard, chat and local models start at once, and Discord and Telegram keep retrying in the background until the internet is back.
 
 ## Model memory
 - A model loads only when the first message or scheduled run needs it. Starting the bot and opening `/panel` don't load one.

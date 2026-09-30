@@ -3,6 +3,8 @@
 Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `bot_v22.py`). From 0.23.0 on, git history is the record.
 
 ## Unreleased
+- Chat from the dashboard: a **Chat** tab talks to the bot over your Wi-Fi, a third front end next to Discord and Telegram on the same backend. It works without internet (local model, Claude Code on Ollama, reminders). Several chats, each with its own engine, model and session; `/panel` and the other menus and buttons work in the page; file attachments both ways; Claude Code's steps shown live. `DASHBOARD_CHAT` = owner (default: the access key holder is an owner) / user (local model only) / off.
+- With the dashboard chat on, the bot starts without internet: no more waiting for discord.com, or exiting after 5 minutes. Discord and Telegram keep retrying in the background.
 - Scheduled tasks are pinned to the engine and model that created them, and each has its own permissions. `/tasks` → ⚙️ changes both:
   - the model a task runs on: the creator can pick among local models, and owners can also pick any Claude Code backend and model;
   - read-only, edit or full access for Claude Code tasks (owners only; full access asks you to confirm and isn't offered on Ollama);

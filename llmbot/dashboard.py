@@ -1,6 +1,7 @@
 """Web dashboard: what the bot is doing now and what it has done, viewable from a phone on the same network.
 
-Runs inside the bot process (aiohttp, which discord.py already uses) on DASHBOARD_HOST:DASHBOARD_PORT. Read-only.
+Runs inside the bot process (aiohttp, which discord.py already uses) on DASHBOARD_HOST:DASHBOARD_PORT. The status
+pages only read; the Chat tab talks to the bot like Discord or Telegram (llmbot/webchat.py, DASHBOARD_CHAT).
 Access needs the key (DASHBOARD_TOKEN, or the one generated in data/dashboard.key): open /?key=<key> once and a
 cookie remembers it. Owners get the link with /dashboard in Discord or Telegram. Requests from public internet
 addresses are refused even with the key; only this PC, the LAN and Tailscale-style (100.64/10) addresses get in.
@@ -23,6 +24,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from aiohttp import web
 
@@ -204,6 +206,8 @@ async def page(request: web.Request) -> web.StreamResponse:
 
 
 async def login(request: web.Request) -> web.StreamResponse:
+    if (request.content_length or 0) > 4096:  # the app allows big uploads (chat files); a key is tiny
+        raise web.HTTPRequestEntityTooLarge(max_size=4096, actual_size=request.content_length)
     form = await request.post()
     if hmac.compare_digest(str(form.get("key", "")).strip().encode(), _key.encode()):
         return _home()
@@ -406,7 +410,7 @@ def current_job() -> dict | None:
             "backend": job.snap.backend, "model": job.snap.model, "perm": job.snap.perm, "workspace": job.snap.workspace,
             "seconds": job.elapsed(), "scheduled": job.scheduled, "stopping": job.stop_requested,
             "lines": [core.redact(x) for x in job.lines], "context": job.parser.context_tokens,
-            **_names(ch, job.user_id)}
+            "channel": str(ch) if ch is not None else None, **_names(ch, job.user_id)}
 
 
 def schedule() -> dict:
@@ -506,8 +510,130 @@ async def logtail(request: web.Request) -> dict:
 # ---- server ---------------------------------------------------------------------------------------------------
 
 
+# ---- chat (llmbot/webchat.py) ---------------------------------------------------------------------------------
+
+UPLOAD_FILES_MAX = 10
+
+
+def _chat_api(fn):
+    """Signed in, chat on, and for POSTs a same-origin request (the cookie is SameSite=Strict too)."""
+    async def wrapper(request: web.Request):
+        if not _authed(request):
+            return web.json_response({"error": "not signed in"}, status=401)
+        fe = webchat.frontend() if webchat else None
+        if fe is None:
+            return web.json_response({"error": "The dashboard chat is off (DASHBOARD_CHAT=off)."}, status=404)
+        if request.method == "POST":
+            origin = request.headers.get("Origin")
+            if origin and urlsplit(origin).netloc != request.host:
+                return web.json_response({"error": "cross-site request refused"}, status=403)
+        chat = None
+        if "cid" in request.match_info:
+            try:
+                chat = fe.chats.get(int(request.match_info["cid"]))
+            except ValueError:
+                pass
+            if chat is None:
+                return web.json_response({"error": "no such chat"}, status=404)
+        return web.json_response(await fn(request, fe, chat), dumps=_dumps)
+    return wrapper
+
+
+async def chats_list(request, fe, chat) -> dict:
+    return {"role": core.DASHBOARD_CHAT, "claude": core.CC_ENABLED and core.is_owner(core.WEB_USER_ID),
+            "chats": [c.summary() for c in sorted(fe.chats.values(), key=lambda c: -c.updated)]}
+
+
+async def chat_new(request, fe, chat) -> dict:
+    body = await request.json() if request.can_read_body else {}
+    return {"chat": fe.new_chat(str(body.get("title") or "")).summary()}
+
+
+async def chat_rename(request, fe, chat) -> dict:
+    title = str((await request.json()).get("title") or "").strip()[:60]
+    if title:
+        chat.title = title
+        chat.touch()
+        fe.save()
+    return {"chat": chat.summary()}
+
+
+async def chat_delete(request, fe, chat) -> dict:
+    fe.delete_chat(chat.id)
+    return {"ok": True}
+
+
+async def chat_get(request, fe, chat) -> dict:
+    job = current_job()
+    return {**chat.since(int(request.query.get("since") or 0)), "chat": chat.summary(), "typing": chat.typing > 0,
+            "job": job if job and job.get("channel") == str(chat.id) else None}
+
+
+async def chat_send(request, fe, chat) -> dict:
+    text, files = "", []
+    reader = await request.multipart()
+    async for part in reader:
+        if part.name == "text":
+            text = (await part.text())[:20000]
+        elif part.name == "file" and part.filename:
+            if len(files) >= UPLOAD_FILES_MAX:
+                continue
+            data = await part.read(decode=False)
+            if len(data) > webchat.FILE_MAX:
+                return {"error": f"{part.filename} is larger than {webchat.FILE_MAX // 2**20} MB"}
+            files.append(webchat.WebAttachment(part.filename, bytes(data), part.headers.get("Content-Type", "")))
+    if not text.strip() and not files:
+        return {"error": "empty message"}
+    core._spawn(fe.send(chat, text, files))  # the reply arrives through polling
+    await asyncio.sleep(0.05)  # so the user's own message is in the next poll
+    return {"ok": True}
+
+
+async def _soon(coro, seconds: float = 10) -> dict:
+    """Run a button/form handler; if it takes long (a model answering), let it finish in the background."""
+    task = asyncio.ensure_future(coro)
+    done, _ = await asyncio.wait({task}, timeout=seconds)
+    return task.result() if done else {"toast": "Working on it…"}
+
+
+async def chat_press(request, fe, chat) -> dict:
+    b = await request.json()
+    opt = b.get("opt")
+    return await _soon(fe.press(chat, int(b["mid"]), int(b["i"]), None if opt is None else int(opt)))
+
+
+async def chat_modal(request, fe, chat) -> dict:
+    b = await request.json()
+    return await _soon(fe.submit_modal(str(b.get("token")), str(b.get("text") or "")[:4000]))
+
+
+async def chat_file(request: web.Request) -> web.StreamResponse:
+    fe = webchat.frontend() if webchat else None
+    if not _authed(request) or fe is None:
+        raise web.HTTPNotFound()
+    path = fe.file_path(request.match_info["name"])
+    if path is None:
+        raise web.HTTPNotFound()
+    image = path.suffix.lower() in webchat.IMAGE_EXT and path.suffix.lower() != ".svg"
+    return web.FileResponse(path, headers={  # never rendered as a page: files come from the model
+        "Content-Disposition": ("inline" if image else "attachment") + f'; filename="{path.name.split("-", 2)[-1]}"',
+        "Content-Security-Policy": "sandbox", "X-Content-Type-Options": "nosniff"})
+
+
+webchat: Any = None  # llmbot.webchat once started
+
+
 def make_app() -> web.Application:
-    app = web.Application(middlewares=[guard], client_max_size=64 * 1024)
+    app = web.Application(middlewares=[guard], client_max_size=UPLOAD_FILES_MAX * 25 * 1024 * 1024)
+    app.router.add_get("/api/chats", _chat_api(chats_list))
+    app.router.add_post("/api/chats", _chat_api(chat_new))
+    app.router.add_get("/api/chats/{cid}", _chat_api(chat_get))
+    app.router.add_post("/api/chats/{cid}/send", _chat_api(chat_send))
+    app.router.add_post("/api/chats/{cid}/press", _chat_api(chat_press))
+    app.router.add_post("/api/chats/{cid}/modal", _chat_api(chat_modal))
+    app.router.add_post("/api/chats/{cid}/rename", _chat_api(chat_rename))
+    app.router.add_post("/api/chats/{cid}/delete", _chat_api(chat_delete))
+    app.router.add_get("/api/chat-file/{name}", chat_file)
     app.router.add_get("/", page)
     for route, path in IMAGES.items():  # no key needed: the login page shows them too
         app.router.add_get(route, lambda request, path=path: web.FileResponse(path, headers={"Cache-Control": "max-age=86400"}))
@@ -520,12 +646,22 @@ def make_app() -> web.Application:
 
 
 async def start(core_module) -> None:
-    global core, _runner, _key
+    global core, _runner, _key, webchat
     core = core_module
     _key = access_key(core.DATA_DIR, core.DASHBOARD_TOKEN)
     _runner = web.AppRunner(make_app(), access_log=None)
     await _runner.setup()
-    await web.TCPSite(_runner, core.DASHBOARD_HOST, core.DASHBOARD_PORT).start()
+    try:
+        await web.TCPSite(_runner, core.DASHBOARD_HOST, core.DASHBOARD_PORT).start()
+    except OSError:
+        await _runner.cleanup()
+        _runner = None
+        raise
+    if core.DASHBOARD_CHAT in ("owner", "user"):  # only once the page is reachable
+        from llmbot import webchat as webchat_mod
+
+        webchat = webchat_mod
+        webchat.start(core)
     log.info("Dashboard on http://%s:%s (%s); owners get the link with /dashboard",
              core.DASHBOARD_HOST, core.DASHBOARD_PORT, ", ".join(lan_ips()))
     if mdns_host():
@@ -542,6 +678,8 @@ async def stop() -> None:
         await asyncio.wait_for(_mdns_unregister(), 5)  # says goodbye, so phones forget the name right away
     except Exception:
         pass
+    if webchat and webchat.frontend():
+        webchat.frontend().flush()  # unsaved chat messages
     if _runner is not None:
         await _runner.cleanup()
         _runner = None

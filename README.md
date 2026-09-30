@@ -42,7 +42,7 @@ One bot process, two front ends. Both share one backend: engines, Claude Code se
   - a per-message cost breakdown.
 - **Frees the GPU:** idle models are unloaded (`/unload` does it right away).
 - **Storage:** JSON files in `data/` with no setup, or a Postgres database if you set `DATABASE_URL`. Either way it holds settings, tasks, reminders, spend, the local model's chat memory and a history of every Claude Code job with its cost.
-- **Web dashboard** for your phone: what the bot is doing right now (live Claude Code progress, local replies, voice notes), a searchable history of everything it did, Claude Code jobs with their cost, today's spend against the cap, upcoming reminders and scheduled prompts, models in GPU memory, the laptop's RAM/GPU/battery, and the log. Served by the bot itself on your local network, behind an access key. `/dashboard` gives owners the link.
+- **Web dashboard** for your phone: what the bot is doing right now (live Claude Code progress, local replies, voice notes), a searchable history of everything it did, Claude Code jobs with their cost, today's spend against the cap, upcoming reminders and scheduled prompts, models in GPU memory, the laptop's RAM/GPU/battery, and the log. Served by the bot itself on your local network, behind an access key. `/dashboard` gives owners the link. Its **Chat** tab talks to the bot over the same Wi-Fi, so the local model still answers when the internet is down.
 - **Laptop power from chat** (`/power`, owners only): lock, sleep, hibernate, restart or shut down, with a confirmation step. The bot posts in the chat when it's back up.
 
 ## Security model
@@ -278,6 +278,7 @@ llmbot/
   core.py         backend: engines, Claude Code runner, tools, reminders, scheduler, settings + the Discord front end
   telegram.py     Telegram front end (Bot API over httpx): renders Discord-style output, maps buttons/menus
   dashboard.py    web dashboard (aiohttp, in the bot process); dashboard.html is the page
+  webchat.py      the dashboard's Chat tab: a third front end (like telegram.py), works without internet
   store.py        storage: JSON files in data/ or Postgres
   __main__.py     python -m llmbot   (python -m llmbot --mcp-web = the web-tools MCP server Claude Code starts)
 tests/

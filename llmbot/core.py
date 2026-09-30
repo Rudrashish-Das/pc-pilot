@@ -83,6 +83,19 @@ def is_telegram_id(x: int) -> bool:
     return abs(int(x)) < 10 ** 16
 
 
+# Web chat in the dashboard (llmbot/webchat.py): its chats and its one user have ids -10^17 and below, which no
+# Discord id (positive) or Telegram id (abs < 10^16) can be.
+WEB_ID_BASE = 10 ** 17
+WEB_USER_ID = -WEB_ID_BASE
+# Who the dashboard chat talks as: owner (Claude Code, /power: the access key is the laptop owner's), user (local
+# model only), or off.
+DASHBOARD_CHAT = _env("DASHBOARD_CHAT", "owner").lower()
+
+
+def is_web_id(x: int) -> bool:
+    return int(x) <= -WEB_ID_BASE
+
+
 LLM_URL = _env("LLM_URL", "http://localhost:11434/v1").rstrip("/")
 LLM_MODEL = _env("LLM_MODEL", "qwen3.5:9b")
 LLM_API_KEY = _env("LLM_API_KEY")
@@ -419,10 +432,14 @@ def update_settings(channel_id: int, **changes) -> dict:
 def is_allowed(user_id: int) -> bool:
     if is_telegram_id(user_id):  # Telegram: only listed users, never "everyone"
         return user_id in TELEGRAM_ALLOWED_USER_IDS or user_id in TELEGRAM_OWNER_IDS
+    if is_web_id(user_id):  # the dashboard's chat: whoever has its access key
+        return user_id == WEB_USER_ID and DASHBOARD_CHAT in ("owner", "user")
     return not ALLOWED_USER_IDS or user_id in ALLOWED_USER_IDS or user_id in OWNER_IDS
 
 
 def is_owner(user_id: int) -> bool:
+    if is_web_id(user_id):
+        return user_id == WEB_USER_ID and DASHBOARD_CHAT == "owner"
     return user_id in (TELEGRAM_OWNER_IDS if is_telegram_id(user_id) else OWNER_IDS)
 
 
@@ -431,7 +448,8 @@ def is_allowed_in(user_id: int, guild: Any) -> bool:
     everyone on Discord: anyone who shares any server with the bot can DM it, so DMs are then owners-only."""
     if not is_allowed(user_id):
         return False
-    return guild is not None or is_telegram_id(user_id) or bool(ALLOWED_USER_IDS) or is_owner(user_id)
+    return (guild is not None or is_telegram_id(user_id) or is_web_id(user_id) or bool(ALLOWED_USER_IDS)
+            or is_owner(user_id))
 
 
 CC_ENABLED = bool(OWNER_IDS or TELEGRAM_OWNER_IDS)
@@ -468,7 +486,7 @@ def where(channel_id: int) -> str:
 
 def chat_label(channel_id: int) -> str:
     """A readable chat name for the dashboard: '#general · My Server', 'DM with Alex', 'Telegram: Alex (private)'."""
-    if is_telegram_id(channel_id):
+    if is_telegram_id(channel_id) or is_web_id(channel_id):
         return where(channel_id)
     ch = bot.get_channel(channel_id)
     if ch is None:
@@ -482,6 +500,8 @@ def chat_label(channel_id: int) -> str:
 def user_label(user_id: int) -> str:
     if is_telegram_id(user_id):
         return (getattr(_telegram, "_names", {}) or {}).get(user_id) or f"Telegram user {user_id}"
+    if is_web_id(user_id):
+        return "You (dashboard)"
     u = bot.get_user(user_id)
     return u.display_name if u else f"Discord user {user_id}"
 
@@ -2377,7 +2397,8 @@ async def _finalize(job: CCJob) -> None:
     this = f"${job.cost_this:.4f}" if job.cost_this is not None else "unknown"
     log.info("CC job %s: %s, %s turns, this message %s, session total $%.4f, context %s tokens",
              job.id, job.outcome(), r.get("num_turns"), this, job.cost_session or 0, job.parser.context_tokens)
-    STORE.record_job({"job_id": job.id, "frontend": "telegram" if is_telegram_id(ch_id) else "discord",
+    STORE.record_job({"job_id": job.id, "frontend": "web" if is_web_id(ch_id) else "telegram" if is_telegram_id(ch_id)
+                      else "discord",
                       "channel_id": ch_id, "user_id": job.user_id, "backend": job.snap.backend, "model": job.snap.model,
                       "perm": job.snap.perm, "outcome": job.outcome(), "turns": r.get("num_turns"),
                       "cost_usd": job.cost_this, "session_cost_usd": job.cost_session,
@@ -3837,7 +3858,7 @@ class DiscordFrontend:
     """Discord's side of the front-end interface (see _frontends)."""
 
     def owns(self, channel_id: int) -> bool:
-        return bool(DISCORD_TOKEN) and not is_telegram_id(channel_id)
+        return bool(DISCORD_TOKEN) and not is_telegram_id(channel_id) and not is_web_id(channel_id)
 
     async def get_channel(self, channel_id: int):
         return bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
@@ -4456,8 +4477,9 @@ def main() -> None:
     except Exception as e:
         log.error("%s", oneline(redact(e), 300))
         sys.exit(1)
-    if not DISCORD_TOKEN and not TELEGRAM_BOT_TOKEN:
-        log.error("Neither DISCORD_TOKEN nor TELEGRAM_BOT_TOKEN is set (see .env.example).")
+    web_chat = bool(DASHBOARD_PORT) and DASHBOARD_CHAT in ("owner", "user")
+    if not DISCORD_TOKEN and not TELEGRAM_BOT_TOKEN and not web_chat:
+        log.error("Neither DISCORD_TOKEN nor TELEGRAM_BOT_TOKEN is set, and the dashboard chat is off (see .env.example).")
         sys.exit(1)
     if not _claim_single_instance():
         log.error("Another copy of the bot is already running; exiting.")
@@ -4471,23 +4493,40 @@ def main() -> None:
     for name, path in WORKSPACES.items():
         if path == BASE_DIR or path in BASE_DIR.parents:
             log.warning("Workspace '%s' contains the bot folder: Claude Code could read .env (your tokens).", name)
-    wait = 1800 if "--boot" in sys.argv else 300  # started at boot (bot_control.ps1 boot): nobody is there to retry
-    if not _wait_for_network(wait):
-        log.error("No network after %d minutes; exiting.", wait // 60)
-        sys.exit(1)
-    if DISCORD_TOKEN:
-        bot.run(DISCORD_TOKEN, log_handler=None)  # the Telegram front end starts from setup_hook -> core_start
-    else:
-        asyncio.run(_telegram_only())
+    if not web_chat:  # with the dashboard chat, start right away instead: it works without internet
+        wait = 1800 if "--boot" in sys.argv else 300  # started at boot (bot_control.ps1 boot): nobody is there to retry
+        if not _wait_for_network(wait):
+            log.error("No network after %d minutes; exiting.", wait // 60)
+            sys.exit(1)
+    asyncio.run(_run())
 
 
-async def _telegram_only() -> None:
-    """No Discord token: run the backend with just the Telegram front end."""
+async def _run() -> None:
+    """The backend first (dashboard and its chat, local models, reminders, scheduled prompts), then the front ends.
+    Discord and Telegram keep retrying while there's no internet; everything local works meanwhile."""
     await core_start()
-    try:
-        await asyncio.Event().wait()
-    finally:
-        await core_stop()
+    if not DISCORD_TOKEN:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await core_stop()
+        return
+    import aiohttp
+
+    async with bot:  # closing the client also stops the backend (LLMBot.close -> core_stop)
+        delay = 5
+        while True:
+            try:
+                await bot.start(DISCORD_TOKEN)  # setup_hook -> core_start is then a no-op
+                return
+            except discord.LoginFailure:
+                log.error("Discord rejected DISCORD_TOKEN; Discord stays off (the dashboard and Telegram keep working).")
+                await asyncio.Event().wait()
+            except (OSError, aiohttp.ClientError, asyncio.TimeoutError, discord.GatewayNotFound, discord.HTTPException) as e:
+                log.warning("Can't reach Discord (%s); retrying in %ss. The dashboard chat and local models keep "
+                            "working.", oneline(redact(e), 150) or type(e).__name__, delay)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 300)
 
 
 if __name__ == "__main__":
