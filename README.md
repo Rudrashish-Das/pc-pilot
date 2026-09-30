@@ -246,6 +246,8 @@ Your settings, tasks, reminders and logs are in `data/` (or your Postgres databa
 | Switch engine | `/panel` → engine, or `/claude …` / `/local …` for one message | `/claude …`, `/local …` |
 | Stop / full log | `/stop`, `/log` | `/stop`, `/log` |
 | New Claude Code session | `/panel` → 🆕 | `/new` |
+| Several conversations at once | one per channel | `/topic <name>`: each topic has its own session and settings |
+| What Claude Code learned from earlier tasks | `/skills` | `/skills` |
 | Reminders | "remind me in 10 min to…" or `/remind` | same, or `/remind in 10 min \| take meds` |
 | Scheduled prompts | "every weekday at 9 give me a news brief" or `/schedule` | same, or `/schedule 0 9 * * 1-5 \| prompt` |
 | List and cancel them, or choose the model a task runs on and what it may do | `/tasks` | `/tasks` |
@@ -280,6 +282,7 @@ llmbot/
   dashboard.py    web dashboard (aiohttp, in the bot process); dashboard.html is the page
   webchat.py      the dashboard's Chat tab: a third front end (like telegram.py), works without internet
   store.py        storage: JSON files in data/ or Postgres
+  skills.py       skills Claude Code saves after tasks that took work and gets back on similar ones
   __main__.py     python -m llmbot   (python -m llmbot --mcp-web = the web-tools MCP server Claude Code starts)
 tests/
   test_suites.py  pytest entry point: runs each suite in its own process

@@ -70,7 +70,7 @@ os_env["DISCORD_TOKEN"] = "secret"; os_env["LLM_API_KEY"] = "secret2"
 snap = B.CCSnap("ollama", "qwen3.5:9b", "read", "default", resume="abc")
 cmd = B.build_cc_command("claude", snap)
 print("   ", cmd)
-check(cmd[cmd.index("--resume") + 1] == "abc" and cmd[-1] == "mcp__bot__delete_file", "resume + allowedTools last")
+check(cmd[cmd.index("--resume") + 1] == "abc" and cmd[-1] == "mcp__bot__save_skill", "resume + allowedTools last")
 env = B.build_cc_env(snap)
 check("DISCORD_TOKEN" not in env and "LLM_API_KEY" not in env, "secrets scrubbed")
 check(env["ANTHROPIC_BASE_URL"] == "http://localhost:11434" and env["ANTHROPIC_API_KEY"] == "" and env["ANTHROPIC_DEFAULT_FABLE_MODEL"] == "qwen3.5:9b", "ollama env")

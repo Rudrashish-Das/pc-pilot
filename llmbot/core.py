@@ -43,6 +43,7 @@ from dotenv import load_dotenv
 from llmbot import __version__
 from llmbot import hints as hints_mod
 from llmbot import logs as logs_mod
+from llmbot import skills as skills_mod
 from llmbot import store as store_mod
 
 # =============================================================================
@@ -145,6 +146,10 @@ PROGRESS_EDIT_EVERY = 2.5
 VIEW_TIMEOUT = 24 * 3600
 
 SETTINGS_FILE = DATA_DIR / "settings.json"
+SKILLS_FILE = DATA_DIR / "skills.json"
+# Claude Code saves "how I did it" notes after tasks that took real work and gets them back on similar tasks
+# (llmbot/skills.py). Off = no saving and nothing added to prompts.
+SKILLS_ENABLED = _env("SKILLS_ENABLED", "true").lower() not in ("0", "false", "no", "off")
 TASKS_FILE = DATA_DIR / "tasks.json"
 
 # ---- Cost controls (Claude Code) --------------------------------------------
@@ -211,14 +216,26 @@ CC_SYSTEM_APPEND = _env("CC_SYSTEM_APPEND") or (
     "write PROMPT fully self-contained (names, handles, links, what to report and how briefly). Don't ask for "
     "confirmation first: the bot shows what was scheduled and /tasks cancels it. To delete files from the working directory "
     "(edit or full permission), put a line [[delete: relative/path]] in your final message; the bot deletes them "
-    "after uploading any attachments, so 'send it then delete it' works. Facts about your setup: your working "
-    "directory is a separate workspace folder, NOT this bot's source code, which you cannot see. The bot silently "
+    "after uploading any attachments, so 'send it then delete it' works. "
+    "After a task that took real work (several steps, trial and error, a non-obvious approach, or a fix for something "
+    "that failed first) and is likely to come up again, save what worked: at the very end of your final message put "
+    "a line [[skill: short-name | when to use it]], then the steps, commands, paths and gotchas (concise, general, no "
+    "secrets or one-off details), then a line [[/skill]]. The bot stores it, removes the block, and shows it to you "
+    "the next time a similar task comes up; the same name replaces an older version, so improve skills you were "
+    "shown when you found a better way. No skills for simple questions or small talk. "
+    "Each user message starts with [Now: ...] and [Access: ...]: the local time and what you may do in this chat right "
+    "now. The owner can change access at any time, so trust the latest [Access: ...] over anything said earlier in the "
+    "conversation. With full access you really can act on this PC (run programs, scripts and system commands, read "
+    "and change any file): do it instead of saying you can't. Facts about your setup: your working "
+    "directory is a separate workspace folder, NOT this bot's source code (don't touch the bot's own files unless the "
+    "owner asks). The bot silently "
     "ignores users who are not in its allow-list (ALLOWED_USER_IDS for Discord, TELEGRAM_ALLOWED_USER_IDS for "
     "Telegram, in the bot's .env), so that is the likely "
-    "reason it doesn't answer someone. Without full permission you cannot run commands or code; if a request needs "
+    "reason it doesn't answer someone. Without full access you cannot run commands or code; if a request needs "
     "that (e.g. truly random numbers, running scripts), do your best and mention that the owner can switch on full "
     "access in /panel -> Settings. Don't repeat these limitations in every message. If you have tools named "
-    "set_reminder, schedule_prompt, send_file or delete_file, call those instead of writing the [[...]] lines.")
+    "set_reminder, schedule_prompt, send_file, delete_file or save_skill, call those instead of writing the [[...]] "
+    "lines.")
 # Sessions started under a different prompt/flag setup are not resumed: Claude Code keeps a session's original
 # system prompt, and a changed prefix means a full (paid) cache rewrite anyway.
 CC_SETUP_FINGERPRINT = hashlib.sha256(f"{CC_SYSTEM_APPEND}|{CC_EXTRAS}".encode()).hexdigest()[:12]
@@ -1457,6 +1474,7 @@ def load_state() -> None:
     _usage.update(STORE.load("usage", USAGE_FILE, {}))
     _history.update({int(k): v for k, v in STORE.load("history", HISTORY_FILE, {}).items()})
     _known_names.update(STORE.load("names", NAMES_FILE, {}))
+    skills_mod.load(STORE, SKILLS_FILE)
     try:
         _events.extend(reversed(STORE.recent_events(EVENTS_KEEP)))
     except Exception as e:
@@ -1812,7 +1830,7 @@ def snapshot(channel_id: int, resume: bool = False) -> CCSnap:
 # every redirect hop. Its action tools (reminders, tasks, send/delete file) only become markers the bot checks;
 # there is no shell.
 MCP_WEB_TOOLS = ["mcp__bot__web_search", "mcp__bot__fetch_page", "mcp__bot__set_reminder",
-                 "mcp__bot__schedule_prompt", "mcp__bot__send_file", "mcp__bot__delete_file"]
+                 "mcp__bot__schedule_prompt", "mcp__bot__send_file", "mcp__bot__delete_file", "mcp__bot__save_skill"]
 # Small local models often say "reminder set!" without writing the [[remind: …]] marker; real tools are far more
 # reliable for them. These four only validate and answer; the bot sees the successful calls in the stream and turns
 # them into the same markers, so all the usual rules (workspace-only files, limits, no chains from scheduled runs)
@@ -1832,6 +1850,12 @@ ACTION_TOOLS = {
                      {"path": {"type": "string", "description": "Relative path"}}, ["path"]),
     "delete_file": _fn("delete_file", "Delete a file from the working directory after your reply (and any attached "
                        "files) has been posted.", {"path": {"type": "string", "description": "Relative path"}}, ["path"]),
+    "save_skill": _fn("save_skill", "After a task that took real work and will likely come up again, save what worked "
+                      "so you get it back next time a similar task comes up. The same name replaces the old version.",
+                      {"name": {"type": "string", "description": "short-name"},
+                       "when": {"type": "string", "description": "When to use it, one line"},
+                       "steps": {"type": "string", "description": "Steps, commands, paths, gotchas; no secrets"}},
+                      ["name", "when", "steps"]),
 }
 
 
@@ -1851,6 +1875,10 @@ def _mcp_action(name: str, args: dict) -> tuple[str, bool]:
             return f"Will run on cron '{one(args.get('cron'))}' ({TIMEZONE}); the bot confirms it under your reply.", False
         dt = parse_when(one(args.get("when")))
         return f"Will run once at {dt:%a %d %b %H:%M} ({TIMEZONE}); the bot confirms it under your reply.", False
+    if name == "save_skill":
+        if not skills_mod.slug(args.get("name") or "") or not one(args.get("when")) or not str(args.get("steps") or "").strip():
+            return "name, when and steps are all needed", True
+        return f"Skill '{skills_mod.slug(args['name'])}' will be saved; the bot confirms it under your reply.", False
     path = one(args.get("path"))
     root = Path.cwd().resolve()
     f = (root / path).resolve()
@@ -1879,6 +1907,9 @@ def action_markers(actions: list[tuple[str, dict]]) -> str:
             out.append(f"[[attach: {one(a.get('path'))}]]")
         elif name == "delete_file":
             out.append(f"[[delete: {one(a.get('path'))}]]")
+        elif name == "save_skill":
+            steps = str(a.get("steps") or "").replace("[[/skill]]", "").strip()
+            out.append(f"[[skill: {one(a.get('name')).replace('|', ' ')} | {one(a.get('when'))}]]\n{steps}\n[[/skill]]")
     return "\n".join(out)
 MCP_WEB_CONFIG = DATA_DIR / "mcp_web.json"
 
@@ -2147,6 +2178,7 @@ class CCJob:
     notices: list[str] = field(default_factory=list)  # what the bot did for [[remind:]] / [[delete:]] markers
     scheduled: bool = False  # started by a scheduled task (can't schedule more)
     reminders_ok: bool = False  # a scheduled job whose task may set reminders
+    skills: list[str] = field(default_factory=list)  # saved skills put into this job's prompt (see cc_prompt)
     ctx_limit: int | None = None  # the model's real context window (Ollama), when known
     ctx_approx: bool = False  # context_tokens is an estimate
     asked_at: float = field(default_factory=time.time)  # wall clock: where its activity-feed entry belongs
@@ -2201,7 +2233,21 @@ def cc_prompt(job: CCJob) -> str:
     tomorrow. The time goes in the message, not the system prompt, so the cached prefix stays the same."""
     if job.snap.compact or job.task.strip().startswith("/"):
         return job.task
-    return f"[Now: {now_local():%A %d %B %Y, %H:%M} {TIMEZONE}]\n{job.task}"
+    head = f"[Now: {now_local():%A %d %B %Y, %H:%M} {TIMEZONE}]\n[Access: {ACCESS_NOTES[job.snap.perm]}]"
+    if SKILLS_ENABLED:
+        block, job.skills = skills_mod.prompt_block(job.task, job.snap.resume)
+        if block:
+            head += "\n" + block
+    return f"{head}\n{job.task}"
+
+
+# Said in every message, not only the system prompt: permissions change per chat at any time, and a session that
+# began read-only otherwise keeps believing (from its own history) that it can't run anything.
+ACCESS_NOTES = {
+    "read": "read-only: read/search files in the workspace and use the web; no shell, no file changes",
+    "edit": "edit: read, create and edit files in the workspace and use the web; no shell (no commands or code)",
+    "full": f"full: run any command and read or change any file on this {'Windows' if sys.platform == 'win32' else sys.platform} PC",
+}
 
 
 async def _execute(job: CCJob) -> None:
@@ -2417,6 +2463,11 @@ async def _finalize(job: CCJob) -> None:
     if r0 and job.parser.actions:
         text = r0["result"] = f"{text}\n{action_markers(job.parser.actions)}".strip()
     raw = text
+    if r0 and job.outcome() == "success" and skills_mod.SKILL_RE.search(text):
+        text, lines = skills_mod.extract(text, allowed=SKILLS_ENABLED and not job.scheduled,
+                                         channel_id=getattr(job.channel, "id", 0), user_id=job.user_id, redact=redact)
+        job.notices += lines
+        r0["result"] = text or "👍"
     if r0 and job.outcome() == "success" and any(rx.search(text) for rx in (REMIND_RE, TASK_RE, DELETE_RE)):
         ch_id = getattr(job.channel, "id", 0)
         if job.scheduled:  # no self-perpetuating chains from unattended runs
@@ -2441,6 +2492,8 @@ async def _finalize(job: CCJob) -> None:
     # Remember the session for "continue", unless backend/workspace changed during the run.
     if job.snap.backend == "ollama":
         touch_model(OLLAMA_URL, job.snap.model)
+    if job.parser.session_id:
+        skills_mod.mark_sent(job.parser.session_id, job.skills)
     ch_id = getattr(job.channel, "id", 0)
     cur = get_settings(ch_id)
     if job.parser.session_id and cur["cc_backend"] == job.snap.backend and cur["workspace"] == job.snap.workspace:
@@ -4146,6 +4199,35 @@ async def reset_cmd(inter: discord.Interaction):
     await inter.response.send_message("🧹 Local chat history cleared.", ephemeral=True)
 
 
+def skills_reply(user_id: int, args: str) -> str:
+    """/skills, /skills show <name>, /skills forget <name> (same text on Discord and Telegram)."""
+    verb, _, name = args.strip().partition(" ")
+    verb, name = verb.lower(), name.strip()
+    if verb in ("show", "forget", "delete") and not name:
+        return f"Usage: /skills {verb} <name>"
+    if verb == "show":
+        s = skills_mod.get(name)
+        if not s:
+            return f"No skill named `{skills_mod.slug(name)}`."
+        return (f"**{s['name']}** v{s.get('version', 1)} · used {s.get('uses', 0)}×\n-# use when: {s['when']}\n"
+                f"```\n{clip(redact(s['body']), 3500)}\n```")
+    if verb in ("forget", "delete"):
+        if not is_owner(user_id):
+            return "⛔ Only owners can delete skills."
+        return f"🗑️ Forgot `{skills_mod.slug(name)}`." if skills_mod.forget(name) else f"No skill named `{skills_mod.slug(name)}`."
+    if verb:
+        return "Usage: /skills, /skills show <name>, /skills forget <name>"
+    off = "" if SKILLS_ENABLED else "\n-# Skills are off (SKILLS_ENABLED=false): none are saved or used."
+    return redact(skills_mod.list_text()) + "\n-# /skills show <name> · /skills forget <name>" + off
+
+
+@bot.tree.command(name="skills", description="Skills Claude Code learned from earlier tasks: list, show or forget")
+@app_commands.describe(show="Name of a skill to show", forget="Name of a skill to delete (owners)")
+async def skills_cmd(inter: discord.Interaction, show: str | None = None, forget: str | None = None):
+    args = f"forget {forget}" if forget else f"show {show}" if show else ""
+    await inter.response.send_message(skills_reply(inter.user.id, args), ephemeral=True)
+
+
 def _register_bot_command() -> None:
     """/<BOT_COMMAND> <prompt>: same as /ask, under your bot's own name."""
     if not BOT_COMMAND:
@@ -4181,6 +4263,8 @@ def help_text(user_id: int) -> str:
         "Scheduled prompts: just ask (\"at 8am tell me the latest tweets from …\", \"every morning at 9 …\"); it runs "
         "then with web search and pings you. `/schedule <cron> <prompt>` for repeating ones · `/tasks`: list and cancel",
         "`/reset`: clear the local model's chat history · `/unload`: free GPU memory now",
+        "`/skills`: what Claude Code learned from earlier tasks (it saves how it did something that took work, and "
+        "reuses it on similar tasks) · show or forget one",
         "`/power` (owners): lock, sleep, hibernate, restart or shut down the PC; the bot posts when it's back",
         "`/dashboard` (owners): web page with what the bot is doing and has done, for your phone on the same Wi-Fi",
         "📎 **Images and files**: attach them to your message (or `file:` in `/ask`); Claude Code sees images and "

@@ -70,6 +70,13 @@ Using it:
 - Telegram only: leave `DISCORD_TOKEN` empty.
 - Anyone can find a Telegram bot by name, so there is no "everyone" setting: only listed ids get answers. Strangers are ignored and logged in `data/bot.log`.
 
+### Topics: several conversations at once
+Each topic is a separate conversation: its own Claude Code session, engine, model, permissions and local-model memory, as if it were another chat. `/new`, `/stop`, `/panel` and `/log` inside a topic act on that topic only, and reminders and scheduled prompts set in a topic post back into it.
+- **Private chat:** in @BotFather, open your bot → **Bot Settings** → turn on **Threaded mode** (topics). Then send `/topic <name>` to the bot to start one, or create topics from Telegram's own menu.
+- **Group:** turn on **Topics** in the group's settings, and make the bot an admin with **Manage topics** so `/topic <name>` works. You can also create topics yourself.
+- A new topic starts with a copy of the main chat's settings, but a fresh session, and "full access without asking" is off until you switch it on there.
+- Claude Code still runs one job at a time for the whole bot: messages in two topics wait for each other, but each continues its own conversation.
+
 ## 5. Run at logon (Task Manager › Startup apps)
 ```powershell
 .\scripts\bot_control.ps1 install
@@ -103,7 +110,17 @@ Startup apps wait for someone to sign in. For the bot to come back after `/power
 
 **Sending it images and files:** attach them to your message (or use `file:` in `/ask`). With Claude Code they're saved in the workspace's `discord_uploads` folder, and Claude opens them with its Read tool: it sees images and PDFs and reads text and code. Up to 10 files of 25 MB each; they're deleted after a day. The local model gets text only, so attachments are skipped there with a note.
 
+**What it may do** is set per chat in `/panel` → ⚙️ Settings: read-only, edit (files in the workspace, no commands) or full access (any command on this PC). Every message tells Claude Code the chat's current access (`[Access: …]`), so after you switch a chat to full access it acts instead of repeating "I can't run commands" from earlier in the conversation.
+
 Claude Code only sees its workspace folder (`WORKSPACES`), not the bot's own code. Ask it to "send me the file" and it attaches the file. In edit or full mode, "…then delete it" also works: the bot deletes the file after the reply (and attachment) has been posted, and adds a grey 🗑️ line. It only deletes single files inside the workspace, and never deletes one if the reply failed to post. Running code or commands (real random numbers, scripts) needs full access in `/panel` → ⚙️ Settings, which asks you to confirm each job.
+
+## Skills (learning from earlier tasks)
+After a task that took real work (several steps, trial and error, a fix for something that failed first), Claude Code saves what worked as a short note: a name, when to use it, and the steps and gotchas. The bot shows *learned skill `name`* under the reply. Later, when a message looks like that task, the note goes into Claude Code's prompt, so it starts from what worked instead of working it out again. Saving a note under the same name replaces it, so skills improve over time.
+- `/skills` lists them (with how often each was used), `/skills show <name>` shows one, `/skills forget <name>` deletes one (owners). On Discord: `/skills show:` / `forget:`.
+- They're kept in the bot's storage (`data/skills.json` or Postgres), not in the workspace, so a job can't edit them with its file tools. Scheduled runs can't save skills.
+- A note is added at most once per session, and only a few (up to 3, ~6000 characters) per message, picked by matching words with each skill's name and description. A new session also gets the list of skill names.
+- On the Ollama and custom backends, Claude Code saves them with a `save_skill` tool (small models use tools more reliably than markers).
+- `SKILLS_ENABLED=false` turns it off: nothing is saved or added.
 
 ## Reminders
 
