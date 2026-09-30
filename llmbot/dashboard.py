@@ -29,6 +29,8 @@ log = logging.getLogger("llmbot.dashboard")
 
 COOKIE = "llmbot_dashboard"
 PAGE = Path(__file__).with_name("dashboard.html")
+IMAGES = {"/logo.png": Path(__file__).with_name("dashboard_logo.png"),  # also the phone home-screen icon
+          "/favicon.png": Path(__file__).with_name("dashboard_favicon.png")}
 _CGNAT = ipaddress.ip_network("100.64.0.0/10")  # Tailscale and carrier NAT
 HEADERS = {
     "Cache-Control": "no-store",
@@ -229,6 +231,40 @@ async def gpu() -> list[dict] | None:
     return gpus
 
 
+_cpu_last: tuple[int, int] | None = None  # (idle, total) 100-ns ticks at the previous reading
+
+
+def _cpu_times() -> tuple[int, int] | None:
+    """Cumulative (idle, total) CPU time across all cores. Windows: GetSystemTimes (kernel time includes idle)."""
+    if sys.platform == "win32":
+        idle, kernel, user = (ctypes.c_ulonglong() for _ in range(3))
+        if not ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+            return None
+        return idle.value, kernel.value + user.value
+    try:  # Linux
+        f = [int(x) for x in Path("/proc/stat").read_text().split("\n", 1)[0].split()[1:]]
+        return f[3] + f[4], sum(f[:8])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+async def cpu() -> dict | None:
+    """CPU load in % since the previous reading (the dashboard polls every few seconds); the first reading samples
+    over a quarter second."""
+    global _cpu_last
+    now = _cpu_times()
+    if now is None:
+        return None
+    if _cpu_last is None:
+        _cpu_last = now
+        await asyncio.sleep(0.25)
+        now = _cpu_times()
+    (idle0, total0), (idle1, total1) = _cpu_last, now
+    _cpu_last = now
+    busy = 100.0 * (1 - (idle1 - idle0) / (total1 - total0)) if total1 > total0 else 0.0
+    return {"percent": round(max(0.0, min(100.0, busy)), 1), "cores": os.cpu_count()}
+
+
 def machine() -> dict:
     """Memory, battery and disk. Windows only for memory/battery (no extra packages)."""
     out: dict[str, Any] = {"host": socket.gethostname()}
@@ -325,7 +361,7 @@ async def state(request: web.Request) -> dict:
         "spend": {"today": core.spent_today(), "daily_budget": core.CC_DAILY_BUDGET_USD,
                   "job_budget": core.CC_MAX_BUDGET_USD,
                   "jobs_today": core._usage.get("jobs", 0) if core._usage.get("date") == core.now_local().date().isoformat() else 0},
-        "machine": {**machine(), "gpu": await cached("gpu", 5, gpu)},
+        "machine": {**machine(), "cpu": await cached("cpu", 2, cpu), "gpu": await cached("gpu", 2, gpu)},
         **schedule(),
         "events": events,
     }
@@ -374,6 +410,8 @@ async def logtail(request: web.Request) -> dict:
 def make_app() -> web.Application:
     app = web.Application(middlewares=[guard], client_max_size=64 * 1024)
     app.router.add_get("/", page)
+    for route, path in IMAGES.items():  # no key needed: the login page shows them too
+        app.router.add_get(route, lambda request, path=path: web.FileResponse(path, headers={"Cache-Control": "max-age=86400"}))
     app.router.add_post("/login", login)
     app.router.add_get("/api/state", api(state))
     app.router.add_get("/api/events", api(events))
@@ -412,13 +450,13 @@ def link_text(angle: bool = True) -> str:
 
 
 LOGIN = """<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Bot dashboard</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Bot dashboard</title><link rel="icon" type="image/png" href="/favicon.png"><link rel="apple-touch-icon" href="/logo.png">
 <meta name="color-scheme" content="light dark">
 <style>body{font:16px system-ui,sans-serif;margin:0;min-height:100vh;display:grid;place-items:center;
 background:Canvas;color:CanvasText}form{width:min(92vw,360px);display:grid;gap:12px}
 input,button{font:inherit;padding:12px;border-radius:10px;border:1px solid #8886}
 button{background:#5865f2;color:#fff;border:0}p{margin:0;opacity:.75;font-size:14px}.e{color:#e5484d;opacity:1}</style>
-</head><body><form method="post" action="/login"><h2 style="margin:0">Bot dashboard</h2>
+</head><body><form method="post" action="/login"><img src="/logo.png" alt="" width="88" height="88" style="justify-self:center"><h2 style="margin:0;text-align:center">Bot dashboard</h2>
 <p>Paste the access key, or open the link from <b>/dashboard</b> in Discord or Telegram.</p>
 <p class="e">{error}</p><input name="key" type="password" autocomplete="current-password" placeholder="Access key" required autofocus>
 <button>Open</button></form></body></html>"""

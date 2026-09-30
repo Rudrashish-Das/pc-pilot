@@ -7,6 +7,8 @@
 <meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
 <title>Bot dashboard</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="apple-touch-icon" href="/logo.png">
 <style>
 :root {
   --bg: #f6f7f9; --card: #ffffff; --text: #16181d; --muted: #646a76; --line: #e3e5ea; --chip: #eef0f4;
@@ -29,6 +31,7 @@ header { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, va
 .bar { max-width: 980px; margin: 0 auto; padding: 10px 16px 0; }
 .title { display: flex; align-items: center; gap: 10px; }
 .title h1 { font-size: 17px; margin: 0; font-weight: 650; }
+.title .logo { width: 30px; height: 30px; flex: none; display: block; }
 .title .sub { color: var(--muted); font-size: 13px; margin-left: auto; text-align: right; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
 .dot.ok { background: var(--ok); } .dot.err { background: var(--err); } .dot.run { background: var(--run); animation: pulse 1.4s infinite; }
@@ -100,7 +103,7 @@ input[type=search] { font: inherit; flex: 1; min-width: 0; padding: 8px 12px; bo
 <body>
 <header>
   <div class="bar">
-    <div class="title"><span class="dot" id="dot"></span><h1>Bot dashboard</h1><span class="sub" id="sub">loading…</span></div>
+    <div class="title"><img class="logo" src="/logo.png" alt=""><h1>Bot dashboard</h1><span class="dot" id="dot"></span><span class="sub" id="sub">loading…</span></div>
     <nav id="tabs">
       <button data-tab="now" class="on">Now</button>
       <button data-tab="activity">Activity</button>
@@ -362,10 +365,16 @@ function renderNow() {
   // machine
   const mc = st.machine || {};
   const rows = [];
-  if (mc.ram) rows.push(h("div", {}, h("div", { class: "row small" }, h("span", {}, "Memory"), h("span", {}, `${gb(mc.ram.used_gb)} / ${gb(mc.ram.total_gb)}`)), meter(mc.ram.used_gb / mc.ram.total_gb)));
-  for (const g of mc.gpu || []) {
-    rows.push(h("div", { style: "margin-top:8px" }, h("div", { class: "row small" }, h("span", {}, "GPU memory"), h("span", {}, `${(g.mem_used_mb / 1024).toFixed(1)} / ${(g.mem_total_mb / 1024).toFixed(1)} GB`)),
-      meter(g.mem_used_mb / g.mem_total_mb, `${g.name} · ${g.util ?? "—"}% busy` + (g.temp_c != null ? ` · ${g.temp_c}°C` : ""))));
+  const bar = (label, value, frac, note) => rows.push(h("div", { style: rows.length ? "margin-top:8px" : "" },
+    h("div", { class: "row small" }, h("span", {}, label), h("span", {}, value)), meter(frac, note)));
+  const gpus = mc.gpu || [];
+  if (mc.cpu) bar("CPU load", mc.cpu.percent.toFixed(0) + "%", mc.cpu.percent / 100, mc.cpu.cores ? `${mc.cpu.cores} logical cores` : null);
+  for (const g of gpus) {
+    if (g.util != null) bar("GPU load", g.util.toFixed(0) + "%", g.util / 100, g.name + (g.temp_c != null ? ` · ${g.temp_c}°C` : ""));
+  }
+  if (mc.ram) bar("Memory", `${gb(mc.ram.used_gb)} / ${gb(mc.ram.total_gb)}`, mc.ram.used_gb / mc.ram.total_gb);
+  for (const g of gpus) {
+    if (g.mem_total_mb) bar("GPU memory", `${(g.mem_used_mb / 1024).toFixed(1)} / ${(g.mem_total_mb / 1024).toFixed(1)} GB`, g.mem_used_mb / g.mem_total_mb);
   }
   const facts = [];
   if (mc.battery) facts.push(["Battery", (mc.battery.percent != null ? mc.battery.percent + "%" : "—") + (mc.battery.plugged_in ? " · plugged in" : " · on battery")]);
@@ -467,17 +476,16 @@ async function loadLog() {
   const r = await getJSON("/api/log?lines=400");
   const rank = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4 };
   const min = S.logLevel === "all" ? -1 : rank[S.logLevel];
-  let level = "INFO";
-  const rows = [];
+  // Group lines into records (a record's traceback lines stay under it, in order), then show newest first.
+  const records = [];
   for (const line of r.lines) {
     const m = line.match(/^\d{4}-\d\d-\d\d [\d:,]+ (DEBUG|INFO|WARNING|ERROR|CRITICAL)\b/);
-    if (m) level = m[1];  // continuation lines (tracebacks) keep the level of their record
-    if ((rank[level] ?? 1) >= min) rows.push(h("div", { class: level }, line));
+    if (m || !records.length) records.push({ level: m ? m[1] : "INFO", lines: [line] });
+    else records[records.length - 1].lines.push(line);
   }
-  const box = $("logbox");
-  const atBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 40;
-  put(box, rows.length ? rows : h("div", { class: "empty" }, r.lines.length ? "Nothing at this level." : "The log is empty."));
-  if (atBottom) window.scrollTo(0, document.body.scrollHeight);
+  const rows = records.reverse().filter((rec) => (rank[rec.level] ?? 1) >= min)
+    .map((rec) => h("div", { class: rec.level }, rec.lines.join("\n")));
+  put($("logbox"), rows.length ? rows : h("div", { class: "empty" }, r.lines.length ? "Nothing at this level." : "The log is empty."));
 }
 
 // ---- wiring

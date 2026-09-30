@@ -132,11 +132,11 @@ Owners only, on Windows. `/power` offers five actions:
 ## Web dashboard
 
 A page served by the bot itself (on by default, port 8765) that shows:
-- **Now:** the running Claude Code job with its live tool steps, local-model replies and voice notes in progress, jobs waiting in line, a pending power action, today's spend against `CC_DAILY_BUDGET_USD`, the models Ollama has in memory (size, % on GPU, when they unload), the laptop's RAM, GPU memory/load/temperature, battery and disk, whether Discord and Telegram are connected, and what's coming up next.
+- **Now:** the running Claude Code job with its live tool steps, local-model replies and voice notes in progress, jobs waiting in line, a pending power action, today's spend against `CC_DAILY_BUDGET_USD`, the models Ollama has in memory (size, % on GPU, when they unload), the laptop's CPU load, GPU load, memory, GPU memory and temperature, battery and disk, whether Discord and Telegram are connected, and what's coming up next.
 - **Activity:** everything the bot did, newest first and grouped by day: local and Claude Code replies (with the reply, time taken, tools, cost), reminders set/fired/cancelled, scheduled prompts created and run, power actions, model unloads, sleep/resume, start/stop, and every warning or error from the log. Filter by kind, search, tap an entry for details, and load older entries. Kept in `data/events.jsonl` (or the `llmbot_events` table on Postgres), so it survives restarts.
 - **Claude jobs:** every Claude Code job with outcome, model, cost, duration and turns.
 - **Scheduled:** reminders and scheduled prompts with countdowns.
-- **Log:** the end of `bot.log`, filterable by level.
+- **Log:** the end of `bot.log`, newest first, filterable by level.
 
 It refreshes every 3 seconds while open and pauses when the tab is in the background.
 

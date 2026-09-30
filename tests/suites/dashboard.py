@@ -70,6 +70,10 @@ async def main():
         check(r0.status_code == 401 and "Access key" in r0.text, "no key: login page")
         check((await c.get("/api/state")).status_code == 401, "no key: API refused")
         check((await c.get("/?key=wrong")).status_code == 401, "wrong key refused")
+        for img in ("/logo.png", "/favicon.png"):
+            ri = await c.get(img)
+            assert ri.status_code == 200 and ri.content[:4] == b"\x89PNG", img
+        check('href="/favicon.png"' in r0.text, "logo and favicon served (no key needed), linked from the login page")
         r1 = await c.get(f"/?key={key}")
         check(r1.status_code == 302 and r1.headers["location"] == "/" and D.COOKIE in r1.headers.get("set-cookie", ""),
               "right key: cookie set, key dropped from the address")
@@ -90,6 +94,8 @@ async def main():
         since = st["events"][-1]["id"]
         check((await c.get(f"/api/state?since={since}")).json()["events"] == [], "state: since= returns only new events")
         check(isinstance(st["machine"], dict) and "spend" in st, "state: machine and spend")
+        c1 = st["machine"]["cpu"]
+        check(c1 is not None and 0 <= c1["percent"] <= 100 and c1["cores"], f"state: CPU load {c1}")
 
         B.STORE.record_job({"job_id": "abc", "outcome": "success", "cost_usd": 0.05, "prompt": "hello", "model": "haiku",
                             "channel_id": CH, "user_id": OWNER})
