@@ -172,6 +172,46 @@ async def main():
     B._frontends.insert(0, tg2)
     tg = tg2
 
+    print("== /panel in a thread changes only that thread")
+
+    def tap(data, thread):
+        return {"callback_query": {"id": "cb", "from": {"id": OWNER, "first_name": "Rudra"}, "data": data,
+                                   "message": {"message_id": 1, "chat": {"id": CHAT, "type": "private"},
+                                               "is_topic_message": True, "message_thread_id": thread}}}
+
+    def keyboard(params):
+        return [b for row in (params.get("reply_markup") or {}).get("inline_keyboard", []) for b in row]
+
+    def last_keyboard():
+        return keyboard([p for m, p in tg.calls if m in ("sendMessage", "editMessageText")][-1])
+
+    async def pick(button_text, option_text, thread):
+        sel = next(b for b in last_keyboard() if button_text in b["text"])
+        await tg._dispatch(tap(sel["callback_data"], thread))
+        opt = next(b for b in last_keyboard() if option_text in b["text"])
+        await tg._dispatch(tap(opt["callback_data"], thread))
+
+    B.set_no_ask(CHAT, None)
+    for c in (CHAT, tid, t2):
+        B.update_settings(c, engine="local", cc_perm="full", style="chat")
+    before = {c: dict(B.get_settings(c)) for c in (CHAT, t2)}
+    await tg._dispatch(msg("/panel", thread=55))
+    check(tg.sent()[-1]["message_thread_id"] == 55 and "Research" in tg.sent()[-1]["text"], "panel opens in the thread")
+    await pick("Engine", "Claude Code", 55)
+    check(B.get_settings(tid)["engine"] == "claude", "engine changed in this thread")
+    settings_btn = next(b for b in last_keyboard() if "Settings" in b["text"])
+    await tg._dispatch(tap(settings_btn["callback_data"], 55))
+    await pick("Full access", "Read-only", 55)
+    check(B.get_settings(tid)["cc_perm"] == "read", "permissions changed in this thread")
+    await pick("Chat", "Cards", 55)
+    check(B.get_settings(tid)["style"] == "cards", "reply style changed in this thread")
+    after = {c: dict(B.get_settings(c)) for c in (CHAT, t2)}
+    check(after == before, "main chat and the other thread untouched")
+    B.update_settings(tid, cc_perm="full")
+    B.set_no_ask(tid, B.NO_ASK_FOREVER)
+    check(B.no_ask_until(tid) and not B.no_ask_until(t2) and not B.no_ask_until(CHAT), "'without asking' in a thread: that thread only")
+    B.set_no_ask(tid, None)
+
     print("== groups with topics")
     B.update_settings(GROUP, engine="local", style="chat")
     n = len(seen)
