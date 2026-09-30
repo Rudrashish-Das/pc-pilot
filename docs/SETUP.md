@@ -74,7 +74,7 @@ Using it:
 ```powershell
 .\scripts\bot_control.ps1 install
 ```
-This adds a **Discord LLM Bot** entry to Startup apps, which you can enable or disable in Task Manager. The bot runs with no window and logs to `data\bot.log`. Other commands: `start`, `stop`, `restart`, `status`, `log`, `remove`. After pulling updates, run `restart`. If PowerShell blocks the script, run `powershell -ExecutionPolicy Bypass -File .\scripts\bot_control.ps1 install`.
+This adds a **Discord LLM Bot** entry, with the logo, to Startup apps. You can enable or disable it in Task Manager. The entry runs `bin\DiscordLLMBot.exe`, a small launcher that `install` compiles from `scripts\launcher.cs` using the C# compiler built into Windows. Task Manager lists a startup entry under the name of the program it runs, so without the launcher the entry would show as "Python". The bot runs with no window and logs to `data\bot.log`. Other commands: `start`, `stop`, `restart`, `status`, `log`, `remove`. After pulling updates, run `restart`. If PowerShell blocks the script, run `powershell -ExecutionPolicy Bypass -File .\scripts\bot_control.ps1 install`.
 
 ## Talking to the bot
 - **Reply style** (`/panel` → ⚙️ Settings, default `REPLY_STYLE=chat`): **💬 Chat** replies like a person: a plain message, *typing…* while it works, and one small grey line with model · cost · today's spend · context · session id. **🗂️ Cards** brings back the embeds with live progress and Stop / Follow up / Retry / Full log / Compact buttons. `/claude` always uses cards.

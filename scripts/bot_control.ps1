@@ -16,6 +16,19 @@ $Dir      = Split-Path $PSScriptRoot -Parent  # the repo root
 $Pythonw  = Join-Path $Dir ".venv\Scripts\pythonw.exe"
 $Shortcut = Join-Path ([Environment]::GetFolderPath("Startup")) "Discord LLM Bot.lnk"
 $LogFile  = Join-Path $Dir "data\bot.log"
+$Launcher = Join-Path $Dir "bin\DiscordLLMBot.exe"  # built from scripts\launcher.cs so Startup apps shows our name and logo
+
+function Build-Launcher {
+    # csc.exe ships with Windows (.NET Framework 4), so there's nothing to install
+    $csc = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+    if (-not (Test-Path $csc)) { $csc = Join-Path $env:WINDIR "Microsoft.NET\Framework\v4.0.30319\csc.exe" }
+    if (-not (Test-Path $csc)) { return $false }
+    New-Item -ItemType Directory -Force (Split-Path $Launcher) | Out-Null
+    $out = & $csc /nologo /target:winexe /optimize "/out:$Launcher" "/win32icon:$(Join-Path $Dir 'assets\logo.ico')" `
+        /reference:System.Windows.Forms.dll (Join-Path $PSScriptRoot "launcher.cs")
+    if ($LASTEXITCODE -ne 0) { $out | Write-Warning; return $false }
+    return $true
+}
 
 function Get-BotProcess {
     # "-m llmbot" but not the "--mcp-web" helper that Claude Code starts
@@ -54,13 +67,23 @@ switch ($Action) {
     "install" {
         $ws = New-Object -ComObject WScript.Shell
         $lnk = $ws.CreateShortcut($Shortcut)
-        $lnk.TargetPath = $Pythonw
-        $lnk.Arguments = "-m llmbot"
+        if (Build-Launcher) {
+            # Task Manager names a startup entry after the program it runs, so this shows as "Discord LLM Bot"
+            $lnk.TargetPath = $Launcher
+            $lnk.Arguments = ""
+            $lnk.IconLocation = "$Launcher,0"
+            $name = "Discord LLM Bot"
+        } else {
+            $lnk.TargetPath = $Pythonw
+            $lnk.Arguments = "-m llmbot"
+            $name = "Python"
+            Write-Warning "Couldn't build the launcher (no csc.exe), so Task Manager will list the bot as 'Python'."
+        }
         $lnk.WorkingDirectory = $Dir
         $lnk.Description = "Discord LLM Bot"
         $lnk.Save()
         "Added to Startup apps: $Shortcut"
-        "Enable/disable it in Task Manager > Startup apps ('Discord LLM Bot')."
+        "Enable/disable it in Task Manager > Startup apps (listed as '$name')."
     }
     "remove" {
         if (Test-Path $Shortcut) { Remove-Item $Shortcut; "Removed from Startup apps." } else { "Not in Startup apps." }
@@ -71,7 +94,10 @@ switch ($Action) {
     "status" {
         $p = Get-BotProcess
         "Running:         " + $(if ($p) { "yes (PID $($p.ProcessId -join ', '))" } else { "no" })
-        "In Startup apps: " + $(if (Test-Path $Shortcut) { "yes (enable/disable in Task Manager)" } else { "no" })
+        $approved = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder" `
+            -ErrorAction SilentlyContinue).(Split-Path $Shortcut -Leaf)
+        $state = if ($approved -and ($approved[0] -band 1)) { "yes, but disabled in Task Manager" } else { "yes (enable/disable in Task Manager)" }
+        "In Startup apps: " + $(if (Test-Path $Shortcut) { $state } else { "no" })
     }
     "log" { Get-Content $LogFile -Tail 40 -Wait }
     "dashboard" {

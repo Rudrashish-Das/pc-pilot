@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo.png" alt="DiscordLLMBot logo" width="160"></p>
+
 # DiscordLLMBot
 
 Talk to AI models running on your own PC from Discord or Telegram, on any device, with no port forwarding.
@@ -203,6 +205,8 @@ You should see `Logged in as YourBot#1234`, and `Telegram: logged in as @yourbot
 .\scripts\bot_control.ps1 start     # starts it now, with no window
 ```
 
+`install` builds a small launcher, `bin\DiscordLLMBot.exe`, using the C# compiler that comes with Windows. Task Manager names each startup entry after the program it runs, so the launcher is what makes the entry show as **Discord LLM Bot** with the logo. Without it, the entry would show as "Python". Run `install` again if you move the folder.
+
 | Command | Does |
 |---|---|
 | `status` | Shows whether it's running and whether it's in Startup apps |
@@ -273,6 +277,8 @@ tests/
   fixtures/       sample Claude Code stream-json output, a short voice note
 scripts/
   bot_control.ps1 install / start / stop / restart / status / log / dashboard / firewall
+  launcher.cs     the Startup-apps launcher that install compiles to bin\DiscordLLMBot.exe
+assets/           logo.png, logo.ico
 docs/SETUP.md     detailed guide: every feature, costs, security
 .env.example      every setting, documented
 data/             runtime state, created on first run (not in git)
