@@ -28,7 +28,7 @@ html, body { margin: 0; background: var(--bg); color: var(--text); }
 body { font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding-bottom: env(safe-area-inset-bottom); }
 header { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
-.bar { max-width: 980px; margin: 0 auto; padding: 10px 16px 0; }
+.bar { max-width: var(--page); margin: 0 auto; padding: 10px var(--gutter) 0; }
 .title { display: flex; align-items: center; gap: 10px; }
 .title h1 { font-size: 17px; margin: 0; font-weight: 650; }
 .title .logo { width: 30px; height: 30px; flex: none; display: block; }
@@ -42,9 +42,16 @@ nav button { font: inherit; font-size: 14px; border: 0; background: none; color:
   border-bottom: 2px solid transparent; white-space: nowrap; cursor: pointer; }
 nav button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
 nav .n { font-size: 11px; background: var(--chip); border-radius: 9px; padding: 1px 6px; margin-left: 4px; }
-main { max-width: 980px; margin: 0 auto; padding: 14px 16px 40px; }
+main { max-width: var(--page); margin: 0 auto; padding: 14px var(--gutter) 40px; }
+/* Width: phones and laptops as before; big monitors get more columns instead of one stretched one. */
+:root { --page: 1000px; --gutter: 16px; }
+@media (min-width: 1200px) { :root { --page: 1480px; --gutter: 28px; } }
+@media (min-width: 1800px) { :root { --page: 2400px; --gutter: 40px; } }
+/* 4K at 100 % Windows scaling (3000+ CSS px wide): everything would be tiny, so scale the page up. */
+@media (min-width: 3000px) { html { zoom: 1.25; } }
 section { display: none; } section.on { display: block; }
 .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+@media (min-width: 1200px) { .grid { gap: 16px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); } }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; min-width: 0; }
 .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
 .card.wide { grid-column: 1 / -1; }
@@ -98,6 +105,34 @@ input[type=search] { font: inherit; flex: 1; min-width: 0; padding: 8px 12px; bo
 .hide { display: none !important; }
 .totals { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; font-size: 14px; }
 .totals b { font-variant-numeric: tabular-nums; }
+/* big screens: sidebars, columns, readable line lengths */
+.chatside { display: none; }
+@media (min-width: 1200px) {
+  .split { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 20px; align-items: start; }
+  .split .side { position: sticky; top: calc(var(--head, 100px) + 14px); }
+  .split .side .chips { flex-direction: column; align-items: stretch; overflow: visible; }
+  .split .side .chips button { text-align: left; border-radius: 10px; }
+  #feed .item .body, #feed .item .more { max-width: 130ch; }
+  #joblist { display: grid; grid-template-columns: repeat(auto-fill, minmax(460px, 1fr)); column-gap: 28px; }
+  #joblist .item, #joblist .item:first-child { border-top: 0; border-bottom: 1px solid var(--line); padding: 10px 0; }
+  .chatlayout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 20px; }
+  .chatside { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; height: var(--chat-h, calc(100dvh - var(--head, 100px) - 14px)); padding-right: 4px; }
+  .chatside .new { margin-bottom: 6px; }
+  .chatside .c { text-align: left; font: inherit; border: 1px solid transparent; background: none; color: var(--text);
+    border-radius: 10px; padding: 8px 10px; cursor: pointer; min-width: 0; }
+  .chatside .c:hover { background: var(--chip); }
+  .chatside .c.on { background: var(--card); border-color: var(--line); }
+  .chatside .c b { display: block; font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chatside .c span { display: block; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #chat-pick, #chat-new { display: none; }
+  .chatbar { justify-content: flex-end; }
+  .msg { max-width: min(80%, 980px); }
+  .msgs { padding-left: 8px; padding-right: 8px; }
+}
+@media (min-width: 1800px) {
+  .card.latest { grid-column: span 2; }
+  .chatlayout { grid-template-columns: 320px minmax(0, 1600px); justify-content: center; }
+}
 /* scroll bars: thin, in the theme's colours, no arrow buttons */
 @supports not selector(::-webkit-scrollbar) {  /* Firefox; Chrome would ignore the ::-webkit rules (and show arrows) */
   * { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--muted) 45%, transparent) transparent; }
@@ -113,7 +148,7 @@ input[type=search] { font: inherit; flex: 1; min-width: 0; padding: 8px 12px; bo
 /* chat */
 body.chatting main { padding-bottom: 0; }
 body.chatting #offline { margin-bottom: 8px; }
-.chatwrap { display: flex; flex-direction: column; height: calc(100dvh - var(--head, 100px) - 14px); min-height: 320px; }
+.chatwrap { display: flex; flex-direction: column; height: var(--chat-h, calc(100dvh - var(--head, 100px) - 14px)); min-height: 320px; }
 .chatbar { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
 .chatbar select { font: inherit; font-size: 14px; flex: 1; min-width: 0; padding: 7px 10px; border-radius: 10px;
   border: 1px solid var(--line); background: var(--card); color: var(--text); }
@@ -209,6 +244,8 @@ dialog .row { justify-content: flex-end; }
 <main>
   <div class="banner err hide" id="offline"></div>
   <section id="chat">
+    <div class="chatlayout">
+    <aside class="chatside" id="chat-side"></aside>
     <div class="chatwrap">
       <div class="chatbar">
         <select id="chat-pick" aria-label="Chat"></select>
@@ -231,6 +268,7 @@ dialog .row { justify-content: flex-end; }
         </form>
       </div>
     </div>
+    </div>
   </section>
   <dialog id="modal"><form method="dialog" id="modal-form"><b id="modal-title"></b><div class="small muted" id="modal-label"></div>
     <textarea id="modal-text"></textarea>
@@ -245,14 +283,20 @@ dialog .row { justify-content: flex-end; }
       <div class="card"><h2>Laptop</h2><div id="machine"></div></div>
       <div class="card"><h2>Bot</h2><div id="botinfo"></div></div>
       <div class="card"><h2>Coming up</h2><div id="next"></div></div>
-      <div class="card"><h2>Latest</h2><div id="latest" class="list"></div></div>
+      <div class="card latest"><h2>Latest</h2><div id="latest" class="list"></div></div>
     </div>
   </section>
   <section id="activity">
-    <div class="tools"><input type="search" id="q" placeholder="Search activity"></div>
-    <div class="chips" id="filters"></div>
-    <div class="card"><div id="feed"></div></div>
-    <div class="center"><button class="btn" id="older">Load older</button></div>
+    <div class="split">
+      <aside class="side">
+        <div class="tools"><input type="search" id="q" placeholder="Search activity"></div>
+        <div class="chips" id="filters"></div>
+      </aside>
+      <div class="split-main">
+        <div class="card"><div id="feed"></div></div>
+        <div class="center"><button class="btn" id="older">Load older</button></div>
+      </div>
+    </div>
   </section>
   <section id="jobs">
     <div class="totals" id="job-totals"></div>
@@ -547,7 +591,7 @@ function renderNow() {
     h("div", { class: "row small" }, h("span", {}, u.icon + " " + when(u.ts)), h("span", { class: "muted" }, until(u.ts))),
     h("div", { class: "body clip" }, u.text)))) : h("div", { class: "empty" }, "No reminders or scheduled prompts."));
   // latest
-  put($("latest"), S.events.slice(0, 5).map(eventItem));
+  put($("latest"), S.events.slice(0, innerWidth >= 1800 ? 10 : 5).map(eventItem));
   if (!S.events.length) put($("latest"), h("div", { class: "empty" }, "Nothing yet."));
 }
 
@@ -796,6 +840,8 @@ function applyChat(data) {
     put($("chat-engine"), h("b", {}, eng), " · ", model, " · tap ⚙️ to change");
     const opt = [...$("chat-pick").options].find((o) => o.value === s.id);
     if (opt && opt.textContent !== s.title) opt.textContent = s.title;
+    const k = C.chats.findIndex((c) => c.id === s.id);
+    if (k >= 0 && (C.chats[k].last !== s.last || C.chats[k].title !== s.title)) { C.chats[k] = s; renderChatSide(); }
   }
   if ($("msgs").querySelector(".msg")) $("msgs").querySelector(":scope > .empty")?.remove();
   else put($("msgs"), h("div", { class: "empty", style: "text-align:center;margin-top:30px" },
@@ -814,7 +860,7 @@ async function loadChats(selectId) {
   if (!r.chats.length) { const n = await postJSON("/api/chats", {}); C.chats = [n.chat]; id = n.chat.id; }
   if (!C.chats.some((c) => c.id === id)) id = C.chats[0].id;
   put($("chat-pick"), C.chats.map((c) => h("option", { value: c.id, selected: c.id === id ? "selected" : null }, c.title)));
-  if (id !== C.id) openChat(id);
+  if (id !== C.id) openChat(id); else renderChatSide();
 }
 
 function openChat(id) {
@@ -822,6 +868,7 @@ function openChat(id) {
   put($("msgs"));
   try { localStorage.setItem("chat", id); } catch (e) {}
   $("chat-pick").value = id;
+  renderChatSide();
   pollChat();
 }
 
@@ -890,7 +937,18 @@ function renderAttached() {
   put($("attached"), C.files.map((f, k) => h("span", {}, "📎 " + f.name + " ", h("a", { href: "#", onclick: (e) => { e.preventDefault(); C.files.splice(k, 1); renderAttached(); } }, "✕"))));
 }
 function autosize() { const t = $("chat-input"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 160) + "px"; }
-function sizeChat() { document.documentElement.style.setProperty("--head", document.querySelector("header").offsetHeight + "px"); }
+function sizeChat() {
+  // Heights in CSS px of the (possibly zoomed, see 4K rule) page: the window's height divided by the zoom.
+  const root = document.documentElement, head = document.querySelector("header").offsetHeight;
+  const zoom = parseFloat(getComputedStyle(root).zoom) || 1;
+  root.style.setProperty("--head", head + "px");
+  root.style.setProperty("--chat-h", Math.max(320, Math.floor(innerHeight / zoom - head - 14)) + "px");
+}
+function renderChatSide() {
+  put($("chat-side"), h("button", { class: "btn new", onclick: () => $("chat-new").click() }, "＋ New chat"),
+    C.chats.map((c) => h("button", { class: "c" + (c.id === C.id ? " on" : ""), onclick: () => { if (c.id !== C.id) openChat(c.id); } },
+      h("b", {}, c.title), h("span", {}, (c.last || "No messages yet") + " · " + ago(c.updated)))));
+}
 
 $("composer").addEventListener("submit", sendChat);
 // command autocomplete: typing "/" lists the commands; tap one, or arrows + Tab/Enter
@@ -1043,6 +1101,7 @@ function start() { clearInterval(timer); timer = setInterval(tick, 3000); tick()
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { start(); if (S.tab === "chat") pollChat(); } });
 let saved = "now";
 try { saved = localStorage.getItem("tab") || "now"; } catch (e) {}
+sizeChat();
 show(["chat", "now", "activity", "jobs", "schedule", "log"].includes(saved) ? saved : "now");
 start();
 </script>
