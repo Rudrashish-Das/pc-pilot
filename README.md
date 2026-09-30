@@ -246,7 +246,7 @@ Your settings, tasks, reminders and logs are in `data/` (or your Postgres databa
 | Switch engine | `/panel` → engine, or `/claude …` / `/local …` for one message | `/claude …`, `/local …` |
 | Stop / full log | `/stop`, `/log` | `/stop`, `/log` |
 | New Claude Code session | `/panel` → 🆕 | `/new` |
-| Several conversations at once | one per channel | `/topic <name>`: each topic has its own session and settings |
+| Several conversations at once | a channel or a thread: each thread starts with its channel's settings, own session | `/topic <name>`: each topic has its own session and settings |
 | What Claude Code learned from earlier tasks | `/skills` | `/skills` |
 | Context window, Claude plan limits (5-hour, weekly), spend | `/usage` | `/usage` |
 | Reminders | "remind me in 10 min to…" or `/remind` | same, or `/remind in 10 min \| take meds` |

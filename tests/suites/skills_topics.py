@@ -212,6 +212,26 @@ async def main():
     check(B.no_ask_until(tid) and not B.no_ask_until(t2) and not B.no_ask_until(CHAT), "'without asking' in a thread: that thread only")
     B.set_no_ask(tid, None)
 
+    print("== Discord threads: start from their channel, follow its 'without asking'")
+    DCHAN, DTHREAD, DTHREAD2 = 900000000000000100, 900000000000000101, 900000000000000102
+    dfe = next(fe for fe in B._frontends if type(fe).__name__ == "DiscordFrontend")
+    dfe.parent_of = lambda c: DCHAN if c in (DTHREAD, DTHREAD2) else None
+    B.update_settings(DCHAN, engine="claude", cc_perm="full", cc_session="chan-sess", cc_no_ask_until=B.NO_ASK_FOREVER)
+    s = B.get_settings(DTHREAD)
+    check(s["cc_perm"] == "full" and B.no_ask_until(DTHREAD) and s["cc_session"] is None and s["parent"] == DCHAN,
+          "new thread: channel's settings incl. 'without asking', own session")
+    check(B.is_subchannel(DTHREAD) and not B.is_subchannel(DCHAN), "knows threads from channels")
+    B.update_settings(DTHREAD, engine="local")
+    check(B.get_settings(DCHAN)["engine"] == "claude", "a thread's /panel leaves the channel alone")
+    B.get_settings(DTHREAD2)
+    check(set(B.set_no_ask(DCHAN, None)) == {DTHREAD, DTHREAD2} and not B.no_ask_until(DTHREAD2),
+          "'without asking' off in the channel: off in its threads")
+    B.set_no_ask(DCHAN, B.NO_ASK_FOREVER)
+    check(B.no_ask_until(DTHREAD) and B.no_ask_until(DTHREAD2), "and on again")
+    check(B.set_no_ask(DTHREAD, None) == [] and B.no_ask_until(DTHREAD2), "in a thread: that thread only")
+    check(B.get_settings(DCHAN + 50)["cc_perm"] == B.CC_PERMISSION, "ordinary channels still start from the defaults")
+    del dfe.parent_of
+
     print("== groups with topics")
     B.update_settings(GROUP, engine="local", style="chat")
     n = len(seen)

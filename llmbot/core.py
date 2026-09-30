@@ -426,7 +426,34 @@ def default_settings() -> dict:
     }
 
 
+# Settings a thread doesn't take from its channel: the channel's Claude Code session is its own conversation.
+NOT_INHERITED = ("cc_session", "cc_session_path", "cc_session_at", "cc_session_setup", "cc_session_ctx",
+                 "cc_session_ctx_limit", "parent")
+
+
+def inherit_settings(channel_id: int, parent: int) -> None:
+    """A new thread / topic starts as a copy of its channel's settings (engine, models, permissions, "without
+    asking", …), remembering the parent so "without asking" set there later also reaches it (set_no_ask)."""
+    base = _settings.get(str(parent))
+    if base is None or str(channel_id) in _settings:
+        return
+    _settings[str(channel_id)] = {**{k: v for k, v in base.items() if k not in NOT_INHERITED}, "parent": parent}
+    STORE.save("settings", SETTINGS_FILE, _settings)
+
+
+def is_subchannel(channel_id: int) -> bool:
+    """A Discord thread or a Telegram topic (its settings came from a parent chat)."""
+    fe = frontend_for(channel_id)
+    return (bool((_settings.get(str(channel_id)) or {}).get("parent"))
+            or getattr(fe, "parent_of", lambda _c: None)(channel_id) is not None
+            or bool(hasattr(fe, "place") and fe.place(channel_id)[1] is not None))
+
+
 def get_settings(channel_id: int) -> dict:
+    if str(channel_id) not in _settings:  # first time here: a Discord thread starts from its channel
+        parent = getattr(frontend_for(channel_id), "parent_of", lambda _c: None)(channel_id)
+        if parent is not None:
+            inherit_settings(channel_id, parent)
     s = {**default_settings(), **_settings.get(str(channel_id), {})}
     if s["workspace"] not in WORKSPACES:
         s["workspace"] = next(iter(WORKSPACES))
@@ -462,9 +489,11 @@ def no_ask_until(channel_id: int) -> float | None:
 
 def set_no_ask(channel_id: int, until: float | None) -> list[int]:
     """Turn "full access without asking" on (until, with full access) or off (None) in a chat and in its sub-chats
-    (Telegram topics): set once in the main chat, it holds in every thread. Returns the sub-chats changed."""
+    (Telegram topics, Discord threads): set once in the main chat, it holds in every thread. Returns the sub-chats
+    changed."""
     fe = frontend_for(channel_id)
-    subs = list(getattr(fe, "subchannels", lambda _c: [])(channel_id))
+    subs = list(dict.fromkeys([*getattr(fe, "subchannels", lambda _c: [])(channel_id),
+                               *(int(k) for k, s in _settings.items() if s.get("parent") == channel_id)]))
     for cid in [channel_id, *subs]:
         if until is None:
             update_settings(cid, cc_no_ask_until=None)
@@ -3209,7 +3238,11 @@ def missing_perms(channel, inter: discord.Interaction | None = None) -> list[str
         perms = channel.permissions_for(channel.guild.me)
     else:
         return []  # DMs, or nothing to check
-    return [label for attr, label in NEEDED_PERMS.items() if not getattr(perms, attr, True)]
+    needed = dict(NEEDED_PERMS)
+    if isinstance(channel, discord.Thread):  # threads use their own send permission
+        del needed["send_messages"]
+        needed["send_messages_in_threads"] = "Send Messages in Threads"
+    return [label for attr, label in needed.items() if not getattr(perms, attr, True)]
 
 
 def perm_help(missing: list[str]) -> str:
@@ -3665,9 +3698,8 @@ class PermView(GuardedView):
             "(\"delete the user's documents\") could then run without you seeing the task first.\n\n"
             "Still asked first: jobs the local model proposes (Auto engine). Never available on the Ollama backend. "
             "Switching this chat away from full access turns it off. Scheduled tasks keep their own permissions."
-            + ("\n\nIn a Telegram chat with topics, this also covers all its topics, including new ones."
-               if hasattr(fe := frontend_for(self.channel_id), "subchannels") and fe.place(self.channel_id)[1] is None
-               else "")))
+            + ("" if is_subchannel(self.channel_id) else
+               "\n\nThis also covers this chat's threads (Discord threads, Telegram topics), including new ones.")))
         await inter.response.edit_message(embed=e, view=NoAskConfirmView(self.channel_id))
 
 
@@ -4234,6 +4266,11 @@ class DiscordFrontend:
 
     def where(self, channel_id: int) -> str:
         return f"<#{channel_id}>"
+
+    def parent_of(self, channel_id: int) -> int | None:
+        """A thread (or forum post) -> its channel, whose settings it starts with (see get_settings)."""
+        ch = bot.get_channel(channel_id)
+        return ch.parent_id if isinstance(ch, discord.Thread) else None
 
 
 _frontends.append(DiscordFrontend())

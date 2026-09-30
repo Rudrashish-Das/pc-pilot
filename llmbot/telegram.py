@@ -49,8 +49,6 @@ PENDING_INPUT_SECONDS = 900
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp")
 # Channel ids for topics: above any real Telegram id (< 2^52 ≈ 4.5e15), below Discord's (> 1e16)
 TOPIC_BASE = 9 * 10 ** 15
-TOPIC_NO_INHERIT = ("cc_session", "cc_session_path", "cc_session_at", "cc_session_setup", "cc_session_ctx",
-                    "cc_session_ctx_limit")
 
 COMMANDS = [
     ("panel", "Engine, models, session, settings for this chat"),
@@ -459,9 +457,7 @@ class Telegram:
             cid = max(self._topics, default=TOPIC_BASE) + 1
             self._topics[cid] = {"chat": chat_id, "thread": thread, "name": name, "no_ask_copied": True}
             self._topic_ids[(chat_id, thread)] = cid
-            parent = self.core._settings.get(str(chat_id))
-            if parent:
-                self.core.update_settings(cid, **{k: v for k, v in parent.items() if k not in TOPIC_NO_INHERIT})
+            self.core.inherit_settings(cid, chat_id)
         elif not name or self._topics[cid].get("name") == name:
             return cid
         self._topics[cid]["name"] = name or self._topics[cid].get("name")

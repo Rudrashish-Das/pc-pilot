@@ -54,6 +54,9 @@ Invite the bot to the other server, using the Discord Developer Portal → your 
 
 Restart the bot after changing it. It removes leftover copies so commands never show twice. Access is still controlled by `ALLOWED_USER_IDS` / `OWNER_IDS`, not by the server: people in other servers are ignored unless they're listed, and only owners get Claude Code (which runs on this PC, in your workspace).
 
+### Threads
+Each Discord thread (or forum post) is its own conversation with its own Claude Code session. A new thread starts with a copy of its channel's settings, including "full access without asking"; `/panel` in a thread changes only that thread. "Full access without asking" turned on or off in the channel applies to all its threads. The bot needs **Send Messages in Threads** to answer there.
+
 ## Telegram (optional)
 Telegram is a second front end on the same bot, in the same process: engines, models, Claude Code sessions, reminders, scheduled prompts, budgets and the GPU queue are shared. Each Telegram chat has its own settings and session, like a Discord channel.
 1. In Telegram, message **@BotFather** → `/newbot`, pick a name and a username ending in `bot`. Put the token in `TELEGRAM_BOT_TOKEN` in `.env`.
