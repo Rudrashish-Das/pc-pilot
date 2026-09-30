@@ -125,14 +125,20 @@ switch ($Action) {
         $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
         # S4U: runs as you without storing your password, whether or not you're signed in. It can't use network
         # shares or saved Windows credentials, which the bot doesn't need.
-        $action = New-ScheduledTaskAction -Execute $Pythonw -Argument "-m llmbot --boot" -WorkingDirectory $Dir
-        $trigger = New-ScheduledTaskTrigger -AtStartup
-        $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType S4U -RunLevel Limited
-        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
-            -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -Priority 4  # default 7 = below normal
-        Register-ScheduledTask -TaskName $BootTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings `
-            -Description "Starts pc-pilot at boot, before anyone signs in. Made by scripts\bot_control.ps1 boot." `
-            -Force | Out-Null
+        # ($taskAction, not $action: PowerShell names ignore case, and $Action is this script's validated parameter)
+        try {
+            $taskAction = New-ScheduledTaskAction -Execute $Pythonw -Argument "-m llmbot --boot" -WorkingDirectory $Dir
+            $trigger = New-ScheduledTaskTrigger -AtStartup
+            $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType S4U -RunLevel Limited
+            $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+                -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -Priority 4  # default 7 = below normal
+            Register-ScheduledTask -TaskName $BootTask -Action $taskAction -Trigger $trigger -Principal $principal `
+                -Settings $settings -Description "Starts pc-pilot at boot, before anyone signs in. Made by scripts\bot_control.ps1 boot." `
+                -Force -ErrorAction Stop | Out-Null
+        } catch {
+            Write-Error "Couldn't register the boot task: $($_.Exception.Message)"
+            exit 1
+        }
         "The bot now starts when Windows boots, as $user, with no sign-in needed. It also starts Ollama if it isn't running."
         "Keep the Startup apps entry too: if the bot is already running at sign-in, it does nothing."
         "Undo with: .\scripts\bot_control.ps1 unboot (as administrator)"
