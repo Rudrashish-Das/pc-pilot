@@ -59,6 +59,9 @@ async def routing():
         ("not an allowed user", "all", FakeMsg(att=Att(), author=999), False),
         ("normal audio file (not a voice note)", "all", FakeMsg(att=Att(voice=False)), False),
         ("plain text, no mention", "all", FakeMsg(content="hello"), False),
+        ("plain text in a DM, no mention", "all", FakeMsg(content="hello", guild=False), True),
+        ("plain text in a DM from someone not allowed", "all", FakeMsg(content="hello", guild=False, author=999), False),
+        ("plain text replying to the bot", "all", FakeMsg(content="hello", ref_author=BOT_ID), True),
     ]
     for label, mode, msg, expect in cases:
         B.update_settings(CH, voice=mode); calls.clear()

@@ -4390,7 +4390,8 @@ class LLMBot(discord.Client):
         # Replying to one of the bot's messages counts as talking to it (no @ needed), like with a person.
         ref = message.reference.resolved if message.reference else None
         replied_to_me = isinstance(ref, discord.Message) and ref.author.id == self.user.id
-        addressed = self.user in message.mentions or via_role or replied_to_me
+        # In a DM every message is to the bot; in a server it needs an @mention or a reply.
+        addressed = message.guild is None or self.user in message.mentions or via_role or replied_to_me
         voice = next((a for a in message.attachments if a.is_voice_message()), None) if VOICE_ENABLED else None
         if voice is not None and not addressed:
             # A voice note can't @mention anyone, so the channel's voice mode decides; DMs always count.
