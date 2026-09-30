@@ -39,6 +39,7 @@ from apscheduler.triggers.date import DateTrigger
 from discord import app_commands
 from dotenv import load_dotenv
 
+from llmbot import hints as hints_mod
 from llmbot import logs as logs_mod
 from llmbot import store as store_mod
 
@@ -2272,6 +2273,9 @@ def result_text(job: CCJob, chat: bool = False) -> tuple[str, list[discord.File]
     files, notes = [], []
     if ws is not None and outcome != "stopped":
         text, files, notes = extract_attachments(text, ws)
+    if outcome == "error":  # what to try, from fixed rules over everything the CLI said
+        text = with_hint(text, job.error, "\n".join(r.get("errors") or []), r.get("subtype"), job.stderr_tail,
+                         where="claude", model=job.snap.model)
     return redact(text) or ("📎" if chat and files else "📎 Attached below." if files else "(no output)"), files, notes
 
 
@@ -2542,6 +2546,12 @@ class Out:
 # =============================================================================
 
 
+def with_hint(message: str, *details: object, where: str = "", model: str | None = None) -> str:
+    """Add a "💡 try this" line from the fixed rules in llmbot/hints.py (no model involved) when one matches."""
+    return redact(hints_mod.with_hint(message, *details, where=where, model=model or LLM_MODEL, llm_url=LLM_URL,
+                                      claude_timeout=CLAUDE_TIMEOUT))
+
+
 async def answer_local(channel, user_id: int, prompt: str, out: Out, *, model: str | None = None,
                        allow_propose: bool = False, note: str | None = None, use_history: bool = True) -> None:
     ch_id = channel.id
@@ -2552,11 +2562,13 @@ async def answer_local(channel, user_id: int, prompt: str, out: Out, *, model: s
     try:
         res = await run_local(prompt, model, ctx, list(_history.get(ch_id, [])) if use_history else None)
     except httpx.HTTPError as e:
-        await out(content=f"⚠️ Could not reach the local model ({type(e).__name__}). Is the LLM server running?")
+        await out(content=with_hint(f"⚠️ Could not reach the local model ({type(e).__name__}).", str(e),
+                                    where="local", model=model))
         return
     except Exception as e:
         log.exception("local engine failed")
-        await out(content=f"⚠️ Local model error: {oneline(redact(e), 300)}")
+        await out(content=with_hint(f"⚠️ Local model error: {oneline(redact(e), 300)}", type(e).__name__,
+                                    where="local", model=model))
         return
     text = redact(res.text) or "_(empty reply)_"
     if use_history:
@@ -2746,7 +2758,7 @@ async def run_scheduled_task(task_id: str) -> None:
             text += "\n-# used: " + ", ".join(res.tools_used)
     except Exception as e:
         log.exception("scheduled task %s failed", task_id)
-        text = f"⚠️ Task failed: {oneline(redact(e), 300)}"
+        text = with_hint(f"⚠️ Task failed: {oneline(redact(e), 300)}", type(e).__name__, where="local", model=model)
     out = Out(channel, ping=uid)
     for chunk in split_message(redact(f"{head}\n{text}")):
         await out(content=chunk)
@@ -2781,7 +2793,7 @@ class GuardedView(discord.ui.View):
         log.exception("view error", exc_info=error)
         try:
             send = inter.followup.send if inter.response.is_done() else inter.response.send_message
-            await send(f"⚠️ {type(error).__name__}: {oneline(redact(error), 200)}", ephemeral=True)
+            await send(with_hint(f"⚠️ {type(error).__name__}: {oneline(redact(error), 200)}"), ephemeral=True)
         except discord.HTTPException:
             pass
 
@@ -3201,7 +3213,7 @@ class Tree(app_commands.CommandTree):
         if isinstance(cause, discord.Forbidden):
             msg = perm_help(missing_perms(inter.channel, inter) or list(NEEDED_PERMS.values()))
         else:
-            msg = f"⚠️ Something went wrong: {type(cause).__name__}: {oneline(redact(cause), 300)}"
+            msg = with_hint(f"⚠️ Something went wrong: {type(cause).__name__}: {oneline(redact(cause), 300)}")
         try:
             if inter.response.is_done():
                 await inter.followup.send(msg, ephemeral=True)
@@ -3333,7 +3345,8 @@ class LLMBot(discord.Client):
             return None
         except Exception as e:
             log.exception("transcription failed")
-            await say(f"-# 🎙️ Couldn't transcribe that: {oneline(redact(e), 150)}")
+            await say(with_hint(f"-# 🎙️ Couldn't transcribe that: {oneline(redact(e), 150)}", type(e).__name__,
+                                where="voice"))
             return None
         log.info("Voice note %.0fs from %s transcribed (%d chars)", seconds, message.author.id, len(text))
         if not text:
@@ -3803,7 +3816,8 @@ class PowerConfirmView(PowerView):
         self.stop()
         err = await do_power(self.action, self.channel_id, inter.user.id)
         if err:
-            text = f"⚠️ Couldn't {POWER_ACTIONS[self.action][1].lower()}: {oneline(redact(err), 300)}"
+            text = with_hint(f"⚠️ Couldn't {POWER_ACTIONS[self.action][1].lower()}: {oneline(redact(err), 300)}",
+                             where="power")
         elif self.action in ("restart", "shutdown"):
             verb = "Restarting" if self.action == "restart" else "Shutting down"
             text = f"{POWER_ACTIONS[self.action][0]} {verb} in {POWER_DELAY}s. /power → Cancel stops it."

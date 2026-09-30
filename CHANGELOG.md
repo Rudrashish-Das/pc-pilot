@@ -3,6 +3,7 @@
 Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `bot_v22.py`). From 0.23.0 on, git history is the record.
 
 ## Unreleased
+- Failures come with a "💡" line saying what to try. It comes from fixed rules in `llmbot/hints.py`, not a model, and fills in your real settings. It covers the local model server being down, a missing model, out of memory, Claude Code login, credit, rate limits, usage limits, context overflow, timeouts, a missing CLI, `/power` errors, voice decoding, DNS, Discord permissions, file size and Postgres. Unknown errors get no made-up advice.
 - Local engine is faster on follow-ups. Ollama now reuses its cached prompt instead of re-reading the whole chat every message (measured: 0.2s instead of 3s for 4k tokens). To make that possible:
   - the current time moved from the system prompt into each user message;
   - old exchanges are dropped in blocks, not one per message;

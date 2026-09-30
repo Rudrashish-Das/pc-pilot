@@ -622,7 +622,7 @@ class Telegram:
             await modal.on_submit(fi)
         except Exception as e:
             log.exception("text input handler failed")
-            await fi.post(f"⚠️ {type(e).__name__}: {self.core.oneline(self.core.redact(e), 200)}")
+            await fi.post(self.core.with_hint(f"⚠️ {type(e).__name__}: {self.core.oneline(self.core.redact(e), 200)}"))
 
     # ---- updates
     async def run(self) -> None:
@@ -672,7 +672,8 @@ class Telegram:
             if chat and uid and self.core.is_allowed(uid):
                 try:
                     await self.api("sendMessage", chat_id=chat,
-                                   text=f"⚠️ Something went wrong: {type(e).__name__}: {self.core.oneline(self.core.redact(e), 300)}")
+                                   text=self.core.with_hint(f"⚠️ Something went wrong: {type(e).__name__}: "
+                                                            f"{self.core.oneline(self.core.redact(e), 300)}"))
                 except TgError:
                     pass
 
@@ -785,7 +786,8 @@ class Telegram:
             return None
         except Exception as e:
             log.exception("transcription failed")
-            await me.reply(f"-# Couldn't transcribe that: {core.oneline(core.redact(e), 150)}")
+            await me.reply(core.with_hint(f"-# Couldn't transcribe that: {core.oneline(core.redact(e), 150)}",
+                                          type(e).__name__, where="voice"))
             return None
         log.info("Telegram voice note %.0fs transcribed (%d chars)", seconds, len(text))
         if not text:
