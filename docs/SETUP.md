@@ -74,7 +74,8 @@ Using it:
 Each topic is a separate conversation: its own Claude Code session, engine, model, permissions and local-model memory, as if it were another chat. `/new`, `/stop`, `/panel` and `/log` inside a topic act on that topic only, and reminders and scheduled prompts set in a topic post back into it.
 - **Private chat:** in @BotFather, open your bot → **Bot Settings** → turn on **Threaded mode** (topics). Then send `/topic <name>` to the bot to start one, or create topics from Telegram's own menu.
 - **Group:** turn on **Topics** in the group's settings, and make the bot an admin with **Manage topics** so `/topic <name>` works. You can also create topics yourself.
-- A new topic starts with a copy of the main chat's settings, but a fresh session, and "full access without asking" is off until you switch it on there.
+- A new topic starts with a copy of the main chat's settings (including "full access without asking"), but a fresh session.
+- "Full access without asking" turned on or off in the main chat applies to all its topics at once. Turned on or off inside a topic, it applies to that topic only.
 - Claude Code still runs one job at a time for the whole bot: messages in two topics wait for each other, but each continues its own conversation.
 
 ## 5. Run at logon (Task Manager › Startup apps)

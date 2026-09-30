@@ -460,6 +460,19 @@ def no_ask_until(channel_id: int) -> float | None:
     return float(until)
 
 
+def set_no_ask(channel_id: int, until: float | None) -> list[int]:
+    """Turn "full access without asking" on (until, with full access) or off (None) in a chat and in its sub-chats
+    (Telegram topics): set once in the main chat, it holds in every thread. Returns the sub-chats changed."""
+    fe = frontend_for(channel_id)
+    subs = list(getattr(fe, "subchannels", lambda _c: [])(channel_id))
+    for cid in [channel_id, *subs]:
+        if until is None:
+            update_settings(cid, cc_no_ask_until=None)
+        else:
+            update_settings(cid, cc_perm="full", cc_no_ask_until=until)  # cleared again where the backend is Ollama
+    return subs
+
+
 def no_ask_text(until: float) -> str:
     return ("until you turn it off" if until >= NO_ASK_FOREVER - 1
             else f"until {discord.utils.format_dt(datetime.fromtimestamp(until, TZ), 't')}")
@@ -3464,7 +3477,7 @@ class PermView(GuardedView):
 
     async def on_noask(self, inter):
         if no_ask_until(self.channel_id) is not None:  # turning it off needs no confirmation
-            update_settings(self.channel_id, cc_no_ask_until=None)
+            set_no_ask(self.channel_id, None)
             await self._refresh(inter)
             return
         self.stop()
@@ -3474,7 +3487,10 @@ class PermView(GuardedView):
             "The risk: Claude Code reads web pages and files you don't control. Hidden instructions in them "
             "(\"delete the user's documents\") could then run without you seeing the task first.\n\n"
             "Still asked first: jobs the local model proposes (Auto engine). Never available on the Ollama backend. "
-            "Switching this chat away from full access turns it off. Scheduled tasks keep their own permissions."))
+            "Switching this chat away from full access turns it off. Scheduled tasks keep their own permissions."
+            + ("\n\nIn a Telegram chat with topics, this also covers all its topics, including new ones."
+               if hasattr(fe := frontend_for(self.channel_id), "subchannels") and fe.place(self.channel_id)[1] is None
+               else "")))
         await inter.response.edit_message(embed=e, view=NoAskConfirmView(self.channel_id))
 
 
@@ -3504,9 +3520,9 @@ class NoAskConfirmView(GuardedView):
                                                       "a shell without you approving each job.", embed=None, view=None)
                     return
                 until = NO_ASK_FOREVER if hours is None else time.time() + hours * 3600
-                update_settings(self.channel_id, cc_perm="full", cc_no_ask_until=until)
-                log.info("Full access without asking turned on in %s by %s (%s)", self.channel_id, inter.user.id,
-                         "until turned off" if hours is None else f"{hours}h")
+                subs = set_no_ask(self.channel_id, until)
+                log.info("Full access without asking turned on in %s (+%d topics) by %s (%s)", self.channel_id,
+                         len(subs), inter.user.id, "until turned off" if hours is None else f"{hours}h")
                 note_event("bot", "Full access without asking turned on", channel_id=self.channel_id,
                            user_id=inter.user.id, until=None if hours is None else until)
             await inter.response.edit_message(embed=perm_embed(self.channel_id), view=PermView(self.channel_id))

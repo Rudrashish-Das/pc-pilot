@@ -4,7 +4,7 @@ Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `
 
 ## Unreleased
 - 📘 **Skills**: after a task that took real work, Claude Code saves what worked (name, when to use it, steps, gotchas). Later messages that look like that task get the note in their prompt, so it starts from what worked. Same name = improved version. `/skills` lists, shows and forgets them; scheduled runs can't save any; `SKILLS_ENABLED=false` turns it off. Idea from Hermes Agent's learning loop.
-- 🧵 **Telegram topics**: each topic (private chat with threaded mode on, or a group with Topics) is its own conversation, with its own Claude Code session, settings and memory. `/topic <name>` creates one. New topics copy the chat's settings, but not its session or "full access without asking".
+- 🧵 **Telegram topics**: each topic (private chat with threaded mode on, or a group with Topics) is its own conversation, with its own Claude Code session, settings and memory. `/topic <name>` creates one. New topics copy the chat's settings (not its session). "Full access without asking" set in the main chat applies to all its topics; set in a topic, to that topic only.
 - Claude Code is told the chat's current permission in every message (`[Access: …]`). Before, a session that started read-only or edit kept saying it couldn't run commands after the chat was switched to full access.
 - ☠️ **Full access without asking**, per chat (`/panel` → ⚙️ Settings, owners): full-access Claude Code messages run with no confirmation card, for 12 hours or until turned off.
   - Jobs the local model proposes still ask.

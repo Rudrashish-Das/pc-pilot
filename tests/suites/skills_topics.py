@@ -127,7 +127,8 @@ async def main():
     check(any(m == "sendChatAction" and p.get("message_thread_id") == 55 for m, p in tg.calls), "typing in the topic")
     s = B.get_settings(tid)
     check(s["engine"] == "local" and s["cc_perm"] == "full" and s["voice"] == "replies", "settings copied from the chat")
-    check(s["cc_session"] is None and s["cc_no_ask_until"] is None, "but not its session or 'without asking'")
+    check(s["cc_session"] is None, "but not its session")
+    check(B.no_ask_until(tid) == B.NO_ASK_FOREVER, "'full access without asking' carries over to new topics")
     await tg._dispatch(msg("again", thread=55))
     check(seen[-1] == tid, "same topic, same id")
     await tg._dispatch(msg("main"))
@@ -139,9 +140,37 @@ async def main():
     await ch.send("reminder!")
     check(tg.sent()[-1]["message_thread_id"] == 55, "reminders/tasks for a topic post into it")
 
-    print("== topics: remembered across restarts")
+    print("== 'without asking': set in the main chat, holds in its topics")
+    await tg._dispatch(msg("x", thread=56))
+    t2 = seen[-1]
+    check(B.set_no_ask(CHAT, None) == [tid, t2] and B.no_ask_until(tid) is None and B.no_ask_until(t2) is None,
+          "turned off in the main chat: off in its topics")
+    B.update_settings(t2, cc_perm="edit")
+    until = time.time() + 3600
+    B.set_no_ask(CHAT, until)
+    check(B.no_ask_until(CHAT) == until and B.no_ask_until(tid) == until and B.no_ask_until(t2) == until,
+          "turned on in the main chat: on in every topic (with full access)")
+    check(B.set_no_ask(tid, None) == [] and B.no_ask_until(tid) is None and B.no_ask_until(t2) == until,
+          "in a topic: only that topic")
+    B.update_settings(t2, cc_backend="ollama")
+    B.set_no_ask(CHAT, until)
+    check(B.no_ask_until(t2) is None, "never on a topic that uses the Ollama backend")
+    B.update_settings(t2, cc_backend="anthropic")
+    B.update_settings(tid, cc_no_ask_until=None)
+
+    print("== topics: remembered across restarts; older topics get the chat's setting once")
+    for t in tg._topics.values():
+        t.pop("no_ask_copied", None)
+    B.STORE.save("tg_topics", tg._topics_file, {str(k): v for k, v in tg._topics.items()})
     tg2 = FakeTg()
     check(tg2.place(tid) == (CHAT, 55) and tg2.cid(CHAT, 55) == tid, "registry reloaded")
+    check(B.no_ask_until(tid) == until, "older topic: copied from the chat")
+    B.update_settings(tid, cc_no_ask_until=None)
+    FakeTg()
+    check(B.no_ask_until(tid) is None, "only once: turning it off in a topic sticks across restarts")
+    B._frontends.remove(tg)
+    B._frontends.insert(0, tg2)
+    tg = tg2
 
     print("== groups with topics")
     B.update_settings(GROUP, engine="local", style="chat")

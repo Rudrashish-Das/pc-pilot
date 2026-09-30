@@ -16,7 +16,8 @@ Topics: in a group with Topics turned on, or a private chat with the bot's threa
 is its own "channel" for the core: its own Claude Code session, engine, permissions and local-model memory. The core
 only knows channels by one int id, so a topic gets an id from TOPIC_BASE up (still a Telegram id, see
 core.is_telegram_id), kept in the "tg_topics" document with its chat and thread; the main chat / General topic keeps
-the chat id. A new topic starts with a copy of its chat's settings (not its session, nor "full access without asking").
+the chat id. A new topic starts with a copy of its chat's settings (not its session). "Full access without asking"
+turned on or off in the main chat also applies to its topics (core.set_no_ask); in a topic, only to that topic.
 
 Started by core_start() when TELEGRAM_BOT_TOKEN is set. Uses the plain Bot API over httpx (long polling), no extra
 dependency. The token is part of every API URL, so errors are re-raised without the URL and log lines are scrubbed.
@@ -49,7 +50,7 @@ IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp")
 # Channel ids for topics: above any real Telegram id (< 2^52 ≈ 4.5e15), below Discord's (> 1e16)
 TOPIC_BASE = 9 * 10 ** 15
 TOPIC_NO_INHERIT = ("cc_session", "cc_session_path", "cc_session_at", "cc_session_setup", "cc_session_ctx",
-                    "cc_session_ctx_limit", "cc_no_ask_until")
+                    "cc_session_ctx_limit")
 
 COMMANDS = [
     ("panel", "Engine, models, session, settings for this chat"),
@@ -404,6 +405,7 @@ class Telegram:
         for k, t in (core.STORE.load("tg_topics", self._topics_file, {}) or {}).items():
             self._topics[int(k)] = t
             self._topic_ids[(t["chat"], t["thread"])] = int(k)
+        self._inherit_no_ask_once()
         scrub = _ScrubToken(token)
         for h in logging.getLogger().handlers:
             h.addFilter(scrub)
@@ -430,6 +432,23 @@ class Telegram:
         t = self._topics.get(cid)
         return (t["chat"], t["thread"]) if t else (cid, None)
 
+    def subchannels(self, cid: int) -> list[int]:
+        """The topic channel ids of a chat (none for a topic itself)."""
+        return [k for k, t in self._topics.items() if t["chat"] == cid] if cid not in self._topics else []
+
+    def _inherit_no_ask_once(self) -> None:
+        """Topics made before they copied "full access without asking" get their chat's setting, once each."""
+        changed = False
+        for k, t in self._topics.items():
+            if t.get("no_ask_copied"):
+                continue
+            t["no_ask_copied"] = changed = True
+            until = self.core.no_ask_until(t["chat"])
+            if until is not None and self.core.no_ask_until(k) is None:
+                self.core.update_settings(k, cc_perm="full", cc_no_ask_until=until)
+        if changed:
+            self.core.STORE.save("tg_topics", self._topics_file, {str(k): v for k, v in self._topics.items()})
+
     def cid(self, chat_id: int, thread: int | None, name: str | None = None) -> int:
         """(chat, topic) -> the core's channel id for it; a new topic gets the next free id and its chat's settings."""
         if thread is None:
@@ -437,7 +456,7 @@ class Telegram:
         cid = self._topic_ids.get((chat_id, thread))
         if cid is None:
             cid = max(self._topics, default=TOPIC_BASE) + 1
-            self._topics[cid] = {"chat": chat_id, "thread": thread, "name": name}
+            self._topics[cid] = {"chat": chat_id, "thread": thread, "name": name, "no_ask_copied": True}
             self._topic_ids[(chat_id, thread)] = cid
             parent = self.core._settings.get(str(chat_id))
             if parent:
