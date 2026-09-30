@@ -115,6 +115,14 @@ Startup apps wait for someone to sign in. For the bot to come back after `/power
 
 Claude Code only sees its workspace folder (`WORKSPACES`), not the bot's own code. Ask it to "send me the file" and it attaches the file. In edit or full mode, "…then delete it" also works: the bot deletes the file after the reply (and attachment) has been posted, and adds a grey 🗑️ line. It only deletes single files inside the workspace, and never deletes one if the reply failed to post. Running code or commands (real random numbers, scripts) needs full access in `/panel` → ⚙️ Settings, which asks you to confirm each job.
 
+## Usage (`/usage`)
+Like the usage panel in the Claude app:
+- **Context window:** how much of the model's context this chat's Claude Code session uses (e.g. 153.5k / 200k). Every message re-reads all of it, so a fuller session costs more per message; `/compact` shrinks it.
+- **Plan usage limits:** your Claude subscription's 5-hour and weekly limits, as a percentage with the reset time. They're shared with the Claude apps and your own Claude Code, so they can rise without the bot doing anything. Claude Code reports them after every job on the Anthropic backend (claude.ai login, not an API key); **🔄 Check plan now** (owners) asks right away with the smallest possible Haiku call (~7k tokens, ~$0.003 API-equivalent).
+- **Spend today:** the API-equivalent cost that `CC_DAILY_BUDGET_USD` counts. On a subscription you're not billed this; the plan limits are what run out.
+
+Once a limit passes 80%, the stats line under each reply says so (visible on Telegram too), and `/panel` shows a one-line summary. The dashboard's **Claude usage** card shows the same bars.
+
 ## Skills (learning from earlier tasks)
 After a task that took real work (several steps, trial and error, a fix for something that failed first), Claude Code saves what worked as a short note: a name, when to use it, and the steps and gotchas. The bot shows *learned skill `name`* under the reply. Later, when a message looks like that task, the note goes into Claude Code's prompt, so it starts from what worked instead of working it out again. Saving a note under the same name replaces it, so skills improve over time.
 - `/skills` lists them (with how often each was used), `/skills show <name>` shows one, `/skills forget <name>` deletes one (owners). On Discord: `/skills show:` / `forget:`.

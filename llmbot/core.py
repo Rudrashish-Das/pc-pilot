@@ -2089,6 +2089,7 @@ class StreamParser:
         self._pending: dict[str, tuple[str, dict]] = {}
         self.actions: list[tuple[str, dict]] = []  # successful mcp__bot__ action tool calls (set_reminder, …)
         self.api_calls: set[str] = set()  # distinct model requests this run (assistant message ids)
+        self.rate_limit: dict | None = None  # the latest plan-usage report (rate_limit_event), see note_plan
 
     def feed_line(self, raw: str) -> list[str]:
         raw = raw.strip()
@@ -2157,6 +2158,8 @@ class StreamParser:
                     self.transcript.append(f"[tool_result{' ERROR' if err else ''}]\n{clip(text, 2000)}")
                     if err and b.get("tool_use_id") not in self._denied:
                         out.append(f"⚠️ {oneline(text, 160)}")
+        elif t == "rate_limit_event" and isinstance(ev.get("rate_limit_info"), dict):
+            self.rate_limit = ev["rate_limit_info"]
         elif t == "result":
             self.result = ev
             self.transcript.append(f"[result] is_error={ev.get('is_error')} turns={ev.get('num_turns')} "
@@ -2422,12 +2425,162 @@ def budget_block(snap: CCSnap) -> str | None:
     return None
 
 
+# ---- Plan usage: the Claude subscription's limits (what the Claude app shows under "Plan usage limits") --------
+# On the Anthropic backend with a claude.ai login, Claude Code's stream-json reports them in a rate_limit_event:
+# utilization 0..1 and reset time per window (five_hour, seven_day, and per-model weekly ones on some plans).
+# Every job updates them; /usage → 🔄 asks again with a tiny Haiku call (~7k tokens, ~$0.003 API-equivalent).
+PLAN_WINDOWS = {"five_hour": "5-hour limit", "seven_day": "Weekly · all models", "seven_day_opus": "Weekly · Opus",
+                "seven_day_sonnet": "Weekly · Sonnet"}
+PLAN_WARN = 0.8  # show the usage in the stats line from here on
+
+
+def note_plan(info: dict) -> None:
+    wins = info.get("unifiedWindows") if isinstance(info.get("unifiedWindows"), dict) else {}
+    if not wins and info.get("rateLimitType"):
+        wins = {info["rateLimitType"]: {"utilization": info.get("utilization"), "resetsAt": info.get("resetsAt")}}
+    plan = _usage.setdefault("plan", {})
+    known = plan.setdefault("windows", {})
+    for name, w in wins.items():
+        if isinstance(w, dict) and isinstance(w.get("utilization"), (int, float)):
+            known[name] = {"utilization": float(w["utilization"]), "resets_at": w.get("resetsAt")}
+    plan.update(at=time.time(), status=info.get("status"), overage=bool(info.get("isUsingOverage")),
+                limited=info.get("rateLimitType") if info.get("status") == "rejected" else None)
+
+
+def plan_windows() -> list[tuple[str, float, float | None]]:
+    """(label, utilization 0..1, resets at) per known window; a window whose reset time has passed reads 0."""
+    out = []
+    wins = (_usage.get("plan") or {}).get("windows") or {}
+    for name in sorted(wins, key=lambda n: (list(PLAN_WINDOWS).index(n) if n in PLAN_WINDOWS else 99, n)):
+        w = wins[name]
+        resets = w.get("resets_at")
+        used = 0.0 if resets and resets <= time.time() else w["utilization"]
+        out.append((PLAN_WINDOWS.get(name, name.replace("_", " ").capitalize()), used, resets))
+    return out
+
+
+def plan_warning() -> str | None:
+    """For the stats line: the plan's fullest window once it passes PLAN_WARN, or that a limit was hit."""
+    plan = _usage.get("plan") or {}
+    wins = plan_windows()
+    if not wins:
+        return None
+    label, used, resets = max(wins, key=lambda w: w[1])
+    if plan.get("status") == "rejected" and used >= 1:
+        return f"⛔ plan limit reached ({label}), resets <t:{int(resets)}:R>" if resets else "⛔ plan limit reached"
+    if used >= PLAN_WARN:
+        return f"{label} {used:.0%} used" + (f", resets <t:{int(resets)}:R>" if resets else "")
+    return None
+
+
+def context_window(result: dict | None, model: str | None) -> int | None:
+    """The model's context window from the result's modelUsage (e.g. 200000, or 1000000 for 1M-context models)."""
+    usage = (result or {}).get("modelUsage") or {}
+    main = usage.get(model or "") or next((u for k, u in usage.items() if model and model.startswith(k)), None)
+    wins = [u.get("contextWindow") for u in ([main] if main else usage.values()) if isinstance(u, dict)]
+    wins = [w for w in wins if isinstance(w, int) and w > 0]
+    return max(wins) if wins else None
+
+
+_plan_lock = asyncio.Lock()
+
+
+async def check_plan_now() -> str | None:
+    """Ask Claude Code for the current plan usage with the smallest possible call. Returns an error text or None."""
+    binary = claude_bin()
+    if not binary:
+        return "Claude Code CLI not found."
+    async with _plan_lock:
+        snap = CCSnap("anthropic", "haiku", "read", next(iter(WORKSPACES)))
+        cmd = [binary, "-p", "--output-format", "stream-json", "--verbose", "--model", "haiku", "--max-turns", "1",
+               "--tools", "", *LEAN_ARGS, "--setting-sources", "user"]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                cwd=str(WORKSPACES[snap.workspace]), env=build_cc_env(snap))
+            out, _ = await asyncio.wait_for(proc.communicate(b"Reply with just: ok"), 90)
+        except asyncio.TimeoutError:
+            await kill_tree(proc)
+            return "Claude Code didn't answer in time."
+        except OSError as e:
+            return f"couldn't start Claude Code: {e}"
+        parser = StreamParser()
+        for line in out.decode("utf-8", "replace").splitlines():
+            parser.feed_line(line)
+        cost = (parser.result or {}).get("total_cost_usd")
+        if isinstance(cost, (int, float)):
+            add_spend(float(cost))
+        if not parser.rate_limit:
+            return ("Claude Code didn't report plan usage (it only does with a claude.ai login, not an API key)."
+                    if parser.result else "Claude Code failed; see /log or bot.log.")
+        note_plan(parser.rate_limit)
+        STORE.save("usage", USAGE_FILE, _usage)
+        return None
+
+
+def bar(frac: float, width: int = 12) -> str:
+    n = round(max(0.0, min(1.0, frac)) * width)
+    return "█" * n + "░" * (width - n)
+
+
+def usage_embed(channel_id: int) -> discord.Embed:
+    """/usage: this chat's context window, the Claude plan's limits, and API-equivalent spend."""
+    s = get_settings(channel_id)
+    e = discord.Embed(title="📊 Usage", color=COLOR_RUN)
+    sid, _why = session_state(s)
+    ctx, lim = s.get("cc_session_ctx"), s.get("cc_session_ctx_limit")
+    if sid and ctx:
+        approx = s["cc_backend"] != "anthropic"
+        if lim:
+            val = f"`{bar(ctx / lim)}` {'~' if approx else ''}{ctx / 1000:.1f}k / {lim / 1000:.0f}k ({ctx / lim:.0%})"
+        else:
+            val = f"{'~' if approx else ''}{ctx / 1000:.1f}k tokens (limit unknown)"
+        if compact_at(lim) and ctx >= compact_at(lim):
+            val += "\n-# long conversation: `/compact` shrinks it, and every message re-reads all of it"
+    else:
+        val = "No Claude Code session in this chat yet (or it's idle, so the next message starts fresh)."
+    e.add_field(name=f"Context window · {where(channel_id)}", value=val, inline=False)
+    plan = _usage.get("plan") or {}
+    wins = plan_windows()
+    if wins:
+        lines = []
+        for label, used, resets in wins:
+            when = (f" · resets <t:{int(resets)}:R>" if resets and resets > time.time() else " · reset since" if resets else "")
+            lines.append(f"**{label}** {used:.0%}{when}\n`{bar(used)}`")
+        if plan.get("status") == "rejected":
+            lines.append("⛔ A limit is reached: Claude Code jobs on the Anthropic backend fail until it resets.")
+        if plan.get("overage"):
+            lines.append("💳 Using extra usage (overage).")
+        lines.append(f"-# As of <t:{int(plan['at'])}:R>: updated after every Claude Code job on the Anthropic backend. "
+                     "Shared with the Claude apps and your own Claude Code.")
+        e.add_field(name="Plan usage limits", value="\n".join(lines), inline=False)
+    else:
+        e.add_field(name="Plan usage limits", inline=False, value=(
+            "Not known yet: they're reported after a Claude Code job on the Anthropic backend (claude.ai login). "
+            "🔄 checks now."))
+    cap = CC_DAILY_BUDGET_USD
+    today = spent_today()
+    jobs = _usage.get("jobs", 0) if _usage.get("date") == now_local().date().isoformat() else 0
+    spend = (f"`{bar(today / cap)}` ${today:.2f} of ${cap:g} daily cap" if cap > 0 else f"${today:.2f} today (no daily cap)")
+    sess_total = (_usage.get("sessions") or {}).get(sid) if sid else None
+    spend += f" · {jobs} job(s)" + (f"\nThis chat's session: ${sess_total:.2f}" if sess_total else "")
+    spend += ("\n-# API-equivalent cost of Anthropic-backend jobs, what the bot's budget counts. On a subscription "
+              "you aren't billed this; the plan limits above are what run out.")
+    e.add_field(name="Spend today", value=spend, inline=False)
+    return e
+
+
 def record_cost(job: CCJob) -> None:
     """The CLI's total_cost_usd is a running total for the whole session (verified: it rises across resumes and
     stays put on a no-op turn). Per-message cost = this total minus the session's previous total, which we keep
     per session id. A resumed session we have no record of (started before v11) only gets its session total."""
+    if job.snap.backend == "anthropic" and job.parser.rate_limit:
+        note_plan(job.parser.rate_limit)
+    if job.ctx_limit is None and job.snap.backend == "anthropic":  # other backends: Claude Code only guesses it
+        job.ctx_limit = context_window(job.parser.result, job.parser.model)
     total = (job.parser.result or {}).get("total_cost_usd")
     if not isinstance(total, (int, float)):
+        STORE.save("usage", USAGE_FILE, _usage)
         return
     seen: dict = _usage.setdefault("sessions", {})
     sid = job.parser.session_id
@@ -2763,6 +2916,8 @@ def chat_stats(job: CCJob, notes: list[str]) -> str:
             parts.append(f"session {fmt_usd(job.cost_session)}")
         cap = f"/${CC_DAILY_BUDGET_USD:g}" if CC_DAILY_BUDGET_USD > 0 else ""
         parts.append(f"today ${spent_today():.2f}{cap}")
+        if warn := plan_warning():
+            warnings.append(warn + " (/usage)")
     ctx = job.parser.context_tokens
     if ctx:
         parts.append(ctx_text(ctx, job.ctx_limit, job.ctx_approx))
@@ -2912,6 +3067,9 @@ def panel_embed(channel_id: int) -> discord.Embed:
     cap = f" of ${CC_DAILY_BUDGET_USD:g}" if CC_DAILY_BUDGET_USD > 0 else ""
     e.add_field(name="CC spend today", value=f"${spent_today():.2f}{cap} · {'lean' if not CC_EXTRAS else 'extras on'}"
                 + (f" · effort {CC_EFFORT}" if CC_EFFORT else ""))
+    if wins := plan_windows():
+        e.add_field(name="Plan usage", value=" · ".join(f"{label.split(' · ')[0].replace(' limit', '')} {used:.0%}"
+                                                        for label, used, _ in wins) + " · /usage")
     e.set_footer(text=redact(f"Workspace path: {WORKSPACES[s['workspace']]}"))
     return e
 
@@ -3273,6 +3431,25 @@ async def _quick(coro: Awaitable, default: Any, timeout: float = 1.8) -> Any:
 def _options(values: list[str], current: str, emoji: str | None = None) -> list[discord.SelectOption]:
     vals = list(dict.fromkeys([current, *values]))[:25] if current else values[:25]
     return [discord.SelectOption(label=clip(v, 100), value=v[:100], emoji=emoji, default=(v == current)) for v in vals]
+
+
+class UsageView(GuardedView):
+    owner_custom_ids = {"u:check"}
+
+    def __init__(self, channel_id: int):
+        super().__init__(timeout=VIEW_TIMEOUT)
+        self.channel_id = channel_id
+        check = discord.ui.Button(custom_id="u:check", label="Check plan now", emoji="🔄",
+                                  style=discord.ButtonStyle.primary)
+        check.callback = self.on_check
+        self.add_item(check)
+
+    async def on_check(self, inter: discord.Interaction):
+        await inter.response.defer()  # the check takes a few seconds
+        err = await check_plan_now()
+        # an ephemeral Discord message can only be edited through its interaction; Telegram/web edit the message
+        edit = getattr(inter, "edit_original_response", None) or inter.message.edit
+        await edit(content=f"⚠️ {err}" if err else None, embed=usage_embed(self.channel_id), view=self)
 
 
 class PanelView(GuardedView):
@@ -4237,6 +4414,12 @@ def skills_reply(user_id: int, args: str) -> str:
     return redact(skills_mod.list_text()) + "\n-# /skills show <name> · /skills forget <name>" + off
 
 
+@bot.tree.command(name="usage", description="Context window, Claude plan limits (5-hour, weekly) and spend")
+async def usage_cmd(inter: discord.Interaction):
+    await inter.response.send_message(embed=usage_embed(inter.channel_id), view=UsageView(inter.channel_id),
+                                      ephemeral=True)
+
+
 @bot.tree.command(name="skills", description="Skills Claude Code learned from earlier tasks: list, show or forget")
 @app_commands.describe(show="Name of a skill to show", forget="Name of a skill to delete (owners)")
 async def skills_cmd(inter: discord.Interaction, show: str | None = None, forget: str | None = None):
@@ -4279,6 +4462,7 @@ def help_text(user_id: int) -> str:
         "Scheduled prompts: just ask (\"at 8am tell me the latest tweets from …\", \"every morning at 9 …\"); it runs "
         "then with web search and pings you. `/schedule <cron> <prompt>` for repeating ones · `/tasks`: list and cancel",
         "`/reset`: clear the local model's chat history · `/unload`: free GPU memory now",
+        "`/usage`: context window, Claude plan limits (5-hour, weekly) and spend, with 🔄 to check now",
         "`/skills`: what Claude Code learned from earlier tasks (it saves how it did something that took work, and "
         "reuses it on similar tasks) · show or forget one",
         "`/power` (owners): lock, sleep, hibernate, restart or shut down the PC; the bot posts when it's back",

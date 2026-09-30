@@ -293,7 +293,7 @@ dialog .row { justify-content: flex-end; }
     <div class="banner warn hide" id="power"></div>
     <div class="grid">
       <div class="card wide" id="busy-card"><h2>Right now</h2><div id="busy"></div></div>
-      <div class="card"><h2>Claude Code spend today</h2><div id="spend"></div></div>
+      <div class="card"><h2>Claude usage</h2><div id="spend"></div></div>
       <div class="card"><h2>Models in memory</h2><div id="models"></div></div>
       <div class="card"><h2>Installed models</h2><div id="installed"></div></div>
       <div class="card"><h2>PC</h2><div id="machine"></div></div>
@@ -554,7 +554,12 @@ function renderNow() {
   if (changed("spend", sp)) put($("spend"), h("div", { class: "big" }, usd(sp.today)),
     sp.daily_budget > 0 ? meter(sp.today / sp.daily_budget, `of ${usd(sp.daily_budget)} daily cap · ${sp.jobs_today} job(s) today`)
       : h("div", { class: "small muted" }, `${sp.jobs_today} job(s) today · no daily cap`),
-    h("div", { class: "small muted", style: "margin-top:6px" }, `API-equivalent cost on the Anthropic backend. Per-job cap ${usd(sp.job_budget)}.`));
+    h("div", { class: "small muted", style: "margin-top:6px" }, `API-equivalent cost on the Anthropic backend. Per-job cap ${usd(sp.job_budget)}.`),
+    (sp.plan || []).length ? h("div", { style: "margin-top:12px" },
+      h("div", { class: "small", style: "margin-bottom:4px" }, "Plan usage limits" + (sp.plan_status === "rejected" ? " · ⛔ limit reached" : "")),
+      sp.plan.map((w) => h("div", { style: "margin-bottom:6px" }, meter(w.used,
+        `${w.label} · ${Math.round(w.used * 100)}%` + (w.resets_at ? (w.resets_at > nowS() ? ` · resets ${until(w.resets_at)}` : " · reset since") : "")))),
+      h("div", { class: "small muted" }, `As of ${ago(sp.plan_at)}, from the last Claude Code job. /usage in the chat checks now.`)) : null);
   // models
   const ms = st.models || [];
   if (changed("models", [ms, st.ollama_up, busy.whisper_loaded])) put($("models"),

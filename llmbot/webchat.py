@@ -436,6 +436,10 @@ class WebFrontend:
             await ch.send(embed=core.panel_embed(cid), view=await core.PanelView.build(cid))
         elif cmd == "tasks":
             await ch.send(embed=core.tasks_embed(uid), view=core.TasksView(uid))
+        elif cmd == "usage":
+            await ch.send(embed=core.usage_embed(cid), view=core.UsageView(cid))
+        elif cmd == "skills":
+            await out(content=core.skills_reply(uid, args))
         elif cmd == "new":
             if not owner:
                 await out(content="⛔ Claude Code isn't available here (DASHBOARD_CHAT, or no OWNER_IDS).")
@@ -556,6 +560,8 @@ COMMANDS = [  # (name, arguments, what it does): for /help and the page's autoco
     ("compact", "", "Shrink a long Claude Code conversation"),
     ("stop", "", "Stop the reply that's running"),
     ("tasks", "", "List and cancel reminders and scheduled prompts"),
+    ("usage", "", "Context window, Claude plan limits (5-hour, weekly), spend"),
+    ("skills", "[show|forget <name>]", "What Claude Code learned from earlier tasks"),
     ("remind", "<when> | <what>", "One-time reminder, e.g. in 10 min | take meds"),
     ("reset", "", "Clear the local model's chat memory"),
     ("unload", "", "Free GPU memory now"),

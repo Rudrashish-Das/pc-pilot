@@ -56,6 +56,7 @@ COMMANDS = [
     ("panel", "Engine, models, session, settings for this chat"),
     ("new", "Start a new Claude Code session"),
     ("topic", "topic <name>: new topic = a separate conversation"),
+    ("usage", "Context window, Claude plan limits, spend"),
     ("skills", "What Claude Code learned from earlier tasks"),
     ("compact", "Shrink a long Claude Code conversation"),
     ("stop", "Stop the reply that's running"),
@@ -905,6 +906,8 @@ class Telegram:
             await chan.send(embed=core.panel_embed(cid), view=await core.PanelView.build(cid))
         elif cmd == "tasks":
             await chan.send(embed=core.tasks_embed(uid), view=core.TasksView(uid))
+        elif cmd == "usage":
+            await chan.send(embed=core.usage_embed(cid), view=core.UsageView(cid))
         elif cmd == "skills":
             await out(content=core.skills_reply(uid, args))
         elif cmd == "topic":
@@ -1049,6 +1052,7 @@ class Telegram:
             "/remind <when> | <what>, or just ask (\"remind me to take my meds in 10 min\")",
             "Scheduled prompts: just ask (\"at 8am tell me the latest news on …\"); /schedule <cron> | <prompt>; /tasks lists and cancels",
             "/reset: clear the local model's memory · /unload: free GPU memory now",
+            "/usage: context window, Claude plan limits (5-hour, weekly) and spend, with a button to check now",
             "/skills: what Claude Code learned from earlier tasks and reuses on similar ones · /skills show|forget <name>",
             "/topic <name>: a new topic = a separate conversation with its own session and settings",
             "/power (owners): lock, sleep, hibernate, restart or shut down the PC; I post here when I'm back",

@@ -468,7 +468,10 @@ async def state(request: web.Request) -> dict:
                  "power": {**pending, **_names(pending.get("channel_id"), pending.get("user_id"))} if pending else None},
         "spend": {"today": core.spent_today(), "daily_budget": core.CC_DAILY_BUDGET_USD,
                   "job_budget": core.CC_MAX_BUDGET_USD,
-                  "jobs_today": core._usage.get("jobs", 0) if core._usage.get("date") == core.now_local().date().isoformat() else 0},
+                  "jobs_today": core._usage.get("jobs", 0) if core._usage.get("date") == core.now_local().date().isoformat() else 0,
+                  "plan": [{"label": label, "used": used, "resets_at": resets} for label, used, resets in core.plan_windows()],
+                  "plan_at": (core._usage.get("plan") or {}).get("at"),
+                  "plan_status": (core._usage.get("plan") or {}).get("status")},
         **schedule(),
         "events": events,
     }
