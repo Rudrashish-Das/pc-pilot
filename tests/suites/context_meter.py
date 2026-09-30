@@ -10,6 +10,7 @@ B._tasks.clear(); B._reminders.clear(); B._usage.clear()
 WS = TMP / "ws"; WS.mkdir(exist_ok=True)
 B.WORKSPACES.clear(); B.WORKSPACES["default"] = WS
 B.OWNER_IDS.clear(); B.OWNER_IDS.add(1); B.ALLOWED_USER_IDS.clear(); B.ALLOWED_USER_IDS.add(1)
+B.CC_ENABLED = True  # computed at import, before the owner above existed
 CH = 2222
 
 
@@ -54,6 +55,27 @@ def unit():
     job.parser.context_tokens = 26000
     check("long chat, send /compact" in B.chat_stats(job, []), "75%: suggest /compact")
 
+    print("== local memory keeps Ollama's prompt cache")
+    check(not re.search(r"\d:\d\d", B.system_prompt()) and B.system_prompt() == B.system_prompt(), "system prompt has no clock in it")
+    check(B.stamped("hi").startswith("[Now: ") and B.stamped("hi").endswith("]" + chr(10) + "hi"), "time goes in the user message")
+    B._history.pop(CH, None)
+    n = B.MAX_HISTORY_TURNS
+    for i in range(n):
+        B.remember(CH, f"q{i}", "a")
+    check(len(B._history[CH]) == 2 * n, f"keeps {n} exchanges")
+    B.remember(CH, "one more", "a")
+    kept = len(B._history[CH]) // 2
+    check(kept == n * 3 // 4 and B._history[CH][-2]["content"] == "one more", f"over {n}: drops a block, keeps {kept}")
+    before = list(B._history[CH])
+    B.remember(CH, "next", "a")
+    check(B._history[CH][:len(before)] == before, "next message only appends (same prefix, cache hit)")
+    B._history.pop(CH, None)
+    for i in range(4):
+        B.remember(CH, f"q{i}", "x" * (B.HISTORY_MAX_CHARS // 3))
+    size = sum(len(m["content"]) for m in B._history[CH])
+    check(size <= B.HISTORY_MAX_CHARS and B._history[CH][-2]["content"] == "q3", f"size cap: {size} chars kept")
+    B._history.pop(CH, None)
+
 
 async def live():
     B.http = httpx.AsyncClient()
@@ -70,7 +92,8 @@ async def live():
     B._history.pop(CH, None)
     r1 = await say("Remember this: my dog is called Biscuit. Just say OK.")
     r2 = await say("What is my dog called? One word.")
-    check("memory 1/6" in r1 and "memory 2/6" in r2 and "biscuit" in r2.lower(), "memory 1/6 -> 2/6, remembers Biscuit")
+    n = B.MAX_HISTORY_TURNS
+    check(f"memory 1/{n}" in r1 and f"memory 2/{n}" in r2 and "biscuit" in r2.lower(), f"memory 1/{n} -> 2/{n}, remembers Biscuit")
     check(re.search(r"~\d+k/32k ctx", r2) and "session" not in r2, "local engine: ctx shown, no session (it has none)")
     await B.unload_all()
 

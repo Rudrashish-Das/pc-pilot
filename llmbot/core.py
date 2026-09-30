@@ -88,6 +88,9 @@ SYSTEM_PROMPT = _env("SYSTEM_PROMPT") or (
     "Use web_search for anything current or factual you are unsure about, and fetch_page to read a specific URL. "
     "Cite sources as links when you used the web."
 )
+# Stays the same between requests so Ollama reuses its cached prompt (system + tools + history); the current time
+# goes at the top of each user message instead. Any change in the prefix makes it re-read the whole chat.
+TIME_NOTE = "Each user message starts with the local time it was sent, as [Now: ...]."
 OLLAMA_URL = _env("OLLAMA_URL", "http://localhost:11434").rstrip("/")  # used by the Claude Code 'ollama' backend
 
 CLAUDE_BIN = _env("CLAUDE_BIN")
@@ -107,7 +110,10 @@ CC_CUSTOM_BASE_URL = _env("CC_CUSTOM_BASE_URL").rstrip("/")
 CC_CUSTOM_TOKEN = _env("CC_CUSTOM_TOKEN")
 CC_CUSTOM_MODELS = [m.strip() for m in _env("CC_CUSTOM_MODELS").split(",") if m.strip()]
 
-MAX_HISTORY_TURNS = 6
+# Plain local engine memory: recent exchanges resent with each message, capped by count and by size so a few long
+# answers can't push the prompt past the model's context window (Ollama then silently drops its start).
+MAX_HISTORY_TURNS = int(_env("LLM_HISTORY_TURNS", "20") or 20)
+HISTORY_MAX_CHARS = int(_env("LLM_HISTORY_CHARS", "40000") or 40000)  # ~11k tokens: a third of a 32k window
 MAX_TOOL_ROUNDS = 6
 FETCH_MAX_CHARS = 6000
 FETCH_MAX_BYTES = 3_000_000
@@ -950,6 +956,7 @@ class LocalResult:
     text: str
     tools_used: list[str]
     proposal: dict | None
+    sent: str = ""  # the user message as sent (time-stamped); stored in history so the next prompt's prefix matches
 
 
 async def execute_tool(name: str, args: dict, ctx: ToolCtx) -> str:
@@ -996,6 +1003,10 @@ async def chat_completion(model: str, messages: list[dict], tools: list[dict] | 
     payload: dict[str, Any] = {"model": model, "messages": messages, "stream": False}
     if tools:
         payload["tools"] = tools
+    if LLM_IDLE_UNLOAD and is_loaded(_llm_root(), model) is not None:  # Ollama
+        # Ollama's default keep_alive (5 min) is shorter than LLM_IDLE_UNLOAD, so the model was reloaded from disk and
+        # lost its prompt cache after 5 quiet minutes. Keep it a bit longer; idle_unloader unloads it on time.
+        payload["keep_alive"] = f"{LLM_IDLE_UNLOAD + 120}s"
     headers = {"Authorization": f"Bearer {LLM_API_KEY}"} if LLM_API_KEY else {}
     async with _llm_lock:  # single GPU: one generation at a time
         _local_active += 1
@@ -1011,8 +1022,11 @@ async def chat_completion(model: str, messages: list[dict], tools: list[dict] | 
 
 
 def system_prompt(extra: str = "") -> str:
-    ts = now_local().strftime("%A, %d %B %Y, %H:%M")
-    return f"{SYSTEM_PROMPT}\n\nCurrent date and time: {ts} ({TIMEZONE}).{extra}"
+    return f"{SYSTEM_PROMPT}\n\n{TIME_NOTE} Timezone: {TIMEZONE}.{extra}"
+
+
+def stamped(prompt: str) -> str:
+    return f"[Now: {now_local():%A %d %B %Y, %H:%M}]\n{prompt}"
 
 
 async def run_local(prompt: str, model: str, ctx: ToolCtx, history: list[dict] | None) -> LocalResult:
@@ -1020,7 +1034,8 @@ async def run_local(prompt: str, model: str, ctx: ToolCtx, history: list[dict] |
     if "propose_claude_code" in ctx.tools:
         extra = ("\nIf the request needs the user's computer (files, code, running commands), call "
                  "propose_claude_code instead of guessing.")
-    messages = [{"role": "system", "content": system_prompt(extra)}, *(history or []), {"role": "user", "content": prompt}]
+    sent = stamped(prompt)
+    messages = [{"role": "system", "content": system_prompt(extra)}, *(history or []), {"role": "user", "content": sent}]
     tools = [TOOL_DEFS[t] for t in ctx.tools]
     used: list[str] = []
     for _round in range(MAX_TOOL_ROUNDS):
@@ -1028,7 +1043,7 @@ async def run_local(prompt: str, model: str, ctx: ToolCtx, history: list[dict] |
         msg = await chat_completion(model, messages, tools)
         calls = msg.get("tool_calls") or []
         if not calls:
-            return LocalResult(strip_think(msg.get("content")), used, ctx.proposal)
+            return LocalResult(strip_think(msg.get("content")), used, ctx.proposal, sent)
         messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
         for call in calls:
             fn = call.get("function", {})
@@ -1045,13 +1060,20 @@ async def run_local(prompt: str, model: str, ctx: ToolCtx, history: list[dict] |
                              "content": clip(result, 8000)})
     messages.append({"role": "user", "content": "Tool budget reached. Answer now using what you have; do not call tools."})
     msg = await chat_completion(model, messages, None)
-    return LocalResult(strip_think(msg.get("content")), used, ctx.proposal)
+    return LocalResult(strip_think(msg.get("content")), used, ctx.proposal, sent)
 
 
 def remember(channel_id: int, prompt: str, answer: str) -> None:
+    """Old exchanges are dropped several at a time, not one per message: dropping the oldest changes the start of the
+    prompt, and Ollama then re-reads the whole history (~1s per 1.3k tokens here) instead of reusing its cache."""
     h = _history.setdefault(channel_id, [])
     h += [{"role": "user", "content": prompt}, {"role": "assistant", "content": answer}]
-    del h[: max(0, len(h) - MAX_HISTORY_TURNS * 2)]
+    size = lambda: sum(len(m["content"]) for m in h)
+    if len(h) > MAX_HISTORY_TURNS * 2:
+        del h[: len(h) - max(1, MAX_HISTORY_TURNS * 3 // 4) * 2]
+    if size() > HISTORY_MAX_CHARS:
+        while len(h) > 2 and size() > HISTORY_MAX_CHARS * 3 // 4:
+            del h[:2]
 
 
 async def list_local_models() -> list[str]:
@@ -1763,7 +1785,7 @@ async def _execute(job: CCJob) -> None:
     err_task = asyncio.create_task(read_stderr())
     try:
         await asyncio.wait_for(read_stdout(), timeout=CLAUDE_TIMEOUT)
-        await asyncio.wait_for(proc.wait(), timeout=15)  # grace period after the result event
+        await asyncio.wait_for(proc.wait(), timeout=5)  # grace period after the result event
     except asyncio.TimeoutError:
         if not job.parser.result:
             job.timed_out = True
@@ -2422,7 +2444,7 @@ async def answer_local(channel, user_id: int, prompt: str, out: Out, *, model: s
         return
     text = redact(res.text) or "_(empty reply)_"
     if use_history:
-        remember(ch_id, prompt, text)
+        remember(ch_id, res.sent or prompt, text)
     chat = get_settings(ch_id)["style"] == "chat"
     footer = [f"-# {line}" for line in ctx.reminders]
     if chat:  # one small line, like the Claude Code chat replies
@@ -3397,8 +3419,8 @@ def help_text(user_id: int) -> str:
         "",
         "**The small grey line** under a reply: model · what that reply cost · today's spend / daily cap · "
         "context size (used/limit on your own models; ~ = estimate) · session. It adds \"long chat, send /compact\" "
-        "when the conversation gets big. On the plain local engine, \"memory 3/6\" is how many recent exchanges it "
-        "still remembers (no session; `/reset` clears it).",
+        "when the conversation gets big. On the plain local engine, \"memory 3/"
+        f"{MAX_HISTORY_TURNS}\" is how many recent exchanges it still remembers (no session; `/reset` clears it).",
     ]
     if not is_owner(user_id):
         lines.append("\n-# Claude Code, /claude, /stop and /log are owner-only; you get the local model.")

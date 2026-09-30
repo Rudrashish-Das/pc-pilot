@@ -98,7 +98,8 @@ async def local():
     check(r.text == "Done!" and r.tools_used == ["schedule_task", "propose_claude_code"], f"result {r}")
     check(r.proposal == {"task": "fix tests", "reason": "needs repo"}, "proposal captured")
     check(any(m["role"] == "tool" for m in calls[1]["messages"]), "tool messages sent back")
-    check("Current date and time" in calls[0]["messages"][0]["content"] and "Asia/Kolkata" in calls[0]["messages"][0]["content"], "date in system prompt")
+    check("Asia/Kolkata" in calls[0]["messages"][0]["content"] and calls[0]["messages"][-1]["content"].startswith("[Now: ")
+          and r.sent == calls[0]["messages"][-1]["content"], "timezone in system prompt, time in the user message")
     saved = json.loads(B.TASKS_FILE.read_text())
     check(len(saved) == 1 and saved[0]["channel_id"] == 42, "task persisted")
     # Read-only ctx cannot schedule

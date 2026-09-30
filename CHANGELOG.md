@@ -2,6 +2,14 @@
 
 Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `bot_v22.py`). From 0.23.0 on, git history is the record.
 
+## Unreleased
+- Local engine is faster on follow-ups. Ollama now reuses its cached prompt instead of re-reading the whole chat every message (measured: 0.2s instead of 3s for 4k tokens). To make that possible:
+  - the current time moved from the system prompt into each user message;
+  - old exchanges are dropped in blocks, not one per message;
+  - the model is kept loaded until the bot's own idle unload, instead of Ollama's 5-minute default.
+- Local engine memory is 20 exchanges instead of 6 (`LLM_HISTORY_TURNS`), with a size cap (`LLM_HISTORY_CHARS`, 40k characters) so long answers can't overflow a 32k context window.
+- Claude Code: the wait after a reply for a lingering CLI is 5 seconds instead of 15.
+
 ## 0.24.0
 - Telegram: the stats line is a tap-to-reveal spoiler, because Telegram has no small grey text. It can be turned off per chat in `/panel` → ⚙️ Settings. Warnings (compact hints, blocked tools, unbacked claims) stay visible either way.
 - Tests: Telegram-only and Discord-only setups.

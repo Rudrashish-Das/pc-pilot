@@ -116,7 +116,8 @@ Ask for something that has to be looked up or done later, and Claude Code schedu
 ## Model memory
 - A model loads only when the first message or scheduled run needs it. Starting the bot and opening `/panel` don't load one.
 - After `LLM_IDLE_UNLOAD` seconds idle (default 600), the bot unloads the models it used, so your GPU is free for other things. `/unload` does it immediately, and `/panel` shows 🧠 loaded or 💤 not in memory.
-- Ollama's own timer (`OLLAMA_KEEP_ALIVE`, default 5m) also applies, and whichever is shorter wins. To let the bot's setting decide, raise Ollama's timer above it. It then also works as a backstop if the bot is killed:
+- The plain local engine asks Ollama to keep the model 2 minutes longer than `LLM_IDLE_UNLOAD`, so it isn't reloaded from disk mid-conversation (a reload also throws away the cached prompt).
+- For Claude Code on Ollama, Ollama's own timer (`OLLAMA_KEEP_ALIVE`, default 5m) applies, and whichever is shorter wins. To let the bot's setting decide, raise Ollama's timer above it. It then also works as a backstop if the bot is killed:
   ```powershell
   setx OLLAMA_KEEP_ALIVE 30m
   ```
