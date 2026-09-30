@@ -1,0 +1,270 @@
+# DiscordLLMBot
+
+Talk to AI models running on your own PC from Discord or Telegram, on any device, with no port forwarding.
+
+One bot process, two front ends. Both share one backend: engines, Claude Code sessions, reminders, scheduled prompts, budgets and the GPU queue.
+
+| Engine | What it is | Cost |
+|---|---|---|
+| 💻 **Local** | Any OpenAI-compatible server (Ollama, LM Studio, llama.cpp…) with tools: web search, page fetch, reminders, scheduled tasks | Free |
+| 🤖 **Claude Code** | The `claude` CLI in headless mode, working in a sandboxed workspace folder. It runs on Anthropic's models or on your own Ollama model | Anthropic pricing, or free on Ollama |
+| ✨ **Auto** | The local model answers. When a task needs a computer, it proposes a Claude Code job and the owner confirms | Mostly free |
+
+## Contents
+- [Features](#features)
+- [Security model](#security-model)
+- [Setup](#setup): step by step, about 20 minutes
+- [Using the bot](#using-the-bot)
+- [Troubleshooting](#troubleshooting)
+- [Project layout](#project-layout) · [Development](#development)
+
+## Features
+
+- **Chat or cards:**
+  - Chat replies read like a person's messages, with one small grey stats line.
+  - Card replies show live progress and have Stop, Follow up, Retry, Full log and Compact buttons.
+- **`/panel`** for per-channel settings: engine, model, Claude Code backend (Anthropic, Ollama or a custom one), permission profile, reply style, voice mode and workspace.
+- **Persistent Claude Code sessions** per channel or chat, with context and cost shown, idle reset and compacting.
+- **Files both ways.**
+  - Send images, PDFs and code to Claude Code.
+  - It can send files back as attachments, and delete workspace files when asked.
+- **Voice notes**, transcribed locally with faster-whisper on the CPU.
+- **Reminders** ("remind me at 6pm…") and **scheduled prompts**:
+  - "every weekday at 9 give me a news brief".
+  - Scheduled prompts run as fresh, read-only Claude Code jobs.
+  - Both survive restarts.
+- **Self-hosted web tools:** on non-Anthropic backends, the bot serves Claude Code its own `web_search` and `fetch_page` over MCP.
+- **Cost controls:**
+  - a budget per job and per day;
+  - lean CLI flags (about 10k tokens per call instead of 34k);
+  - a per-message cost breakdown.
+- **Frees the GPU:** idle models are unloaded (`/unload` does it right away).
+
+## Security model
+
+- **Allow-lists:** only listed Discord and Telegram user ids get answers, and only owners can use Claude Code. Every button and menu checks this again.
+- **No shell for the local model**, ever. `fetch_page` has SSRF protection that blocks private, loopback and link-local addresses, including after redirects.
+- **Claude Code's permission profiles:**
+  - `read` and `edit` can only reach the workspace, with no shell.
+  - `full` asks for confirmation for every job.
+- **Secrets stay out of output:**
+  - Tokens are removed from Claude Code's environment.
+  - Everything posted to chat is redacted first: known secret values, common token formats and your home path.
+  - Bot output can't ping @everyone or roles.
+
+Details: [docs/SETUP.md › Security](docs/SETUP.md#security).
+
+---
+
+## Setup
+
+The steps are written for **Windows** (the bot is developed on Windows 11). Linux and macOS should work too: use `source .venv/bin/activate` and `python3`, and skip the startup script.
+
+### What you need
+
+| | Needed for | Get it |
+|---|---|---|
+| Python 3.11+ | always | [python.org](https://www.python.org/downloads/): tick **Add python.exe to PATH** |
+| Git | cloning the repo | [git-scm.com](https://git-scm.com/) |
+| A Discord **or** Telegram bot token (or both) | always | steps 2 and 3 below |
+| [Ollama](https://ollama.com) + a model | the 💻 Local and ✨ Auto engines | step 5 |
+| [Claude Code](https://docs.claude.com/en/docs/claude-code) + an Anthropic account | the 🤖 Claude Code engine (it can also run on Ollama for free) | step 6 |
+
+You need at least one engine. The easiest free start is Ollama. The most capable is Claude Code.
+
+### 1. Download and install
+
+```powershell
+git clone <this repo's URL> DiscordLLMBot
+cd DiscordLLMBot
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+copy .env.example .env
+```
+
+- If `Activate.ps1` is blocked, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, then try again.
+- From now on, all settings go in **`.env`**. Open it with `notepad .env`. Every setting is explained in the file, and it's git-ignored, so your tokens never get committed.
+
+### 2. Create the Discord bot (skip if you only want Telegram)
+
+1. Open the [Discord Developer Portal](https://discord.com/developers/applications) → **New Application** → give it a name.
+2. **Bot** tab:
+   - Click **Reset Token** and copy the token into `.env` as `DISCORD_TOKEN=...`.
+   - Under **Privileged Gateway Intents**, turn on **Message Content Intent**.
+3. **OAuth2 → URL Generator**:
+   - Scopes: `bot` and `applications.commands`.
+   - Bot permissions: View Channels, Send Messages, Read Message History, Embed Links, Attach Files.
+   - Open the generated URL and add the bot to your server.
+4. In Discord, turn on **User Settings → Advanced → Developer Mode**. Then right-click to copy ids into `.env`:
+   - the server icon, which gives you **Copy Server ID** → `GUILD_ID=...` (commands then show up instantly);
+   - your own name, which gives you **Copy User ID** → `OWNER_IDS=...` and `ALLOWED_USER_IDS=...`.
+
+   ```ini
+   DISCORD_TOKEN=your-token
+   GUILD_ID=123456789012345678
+   ALLOWED_USER_IDS=111111111111111111
+   OWNER_IDS=111111111111111111
+   ```
+   Owners can use Claude Code. Users who are only allowed get just the local model. **Always set `ALLOWED_USER_IDS`:** if it's empty, everyone in the server can use the local model.
+
+### 3. Create the Telegram bot (optional)
+
+1. In Telegram, message [@BotFather](https://t.me/BotFather) and send `/newbot`. Pick a name and a username that ends in `bot`.
+2. Copy the token into `.env` as `TELEGRAM_BOT_TOKEN=...`.
+3. You fill in your Telegram id in step 7. Until then the bot answers nobody on Telegram.
+
+Want only Telegram? Leave `DISCORD_TOKEN` empty.
+
+### 4. Set your timezone
+
+Reminders and schedules use this timezone:
+
+```ini
+TIMEZONE=Asia/Kolkata      # any IANA name: Europe/London, America/New_York, …
+```
+
+### 5. Local engine: Ollama (optional, free)
+
+```powershell
+winget install Ollama.Ollama
+ollama pull qwen3.5:9b
+setx OLLAMA_CONTEXT_LENGTH 32768
+```
+
+- Quit Ollama from the system tray and start it again, so it picks up the context length.
+- The defaults in `.env` already point at it:
+  ```ini
+  LLM_URL=http://localhost:11434/v1
+  LLM_MODEL=qwen3.5:9b
+  ```
+- Pick a model that fits your GPU. `qwen3.5:9b` needs about 8 GB of VRAM with a 32k context; on less, try a 4b model. `ollama ps` shows whether it runs **100% GPU**. A CPU/GPU split works, but it's slower.
+- Any other OpenAI-compatible server works as well: point `LLM_URL` at its `/v1` URL.
+
+### 6. Claude Code engine (optional)
+
+```powershell
+irm https://claude.ai/install.ps1 | iex
+claude
+```
+
+- Log in once in that interactive session, then quit. Check that `claude --version` works in a **new** terminal.
+- If the bot can't find it, set `CLAUDE_BIN` to the full path, for example `C:\Users\<you>\.local\bin\claude.exe`.
+- Claude Code only works inside the folders listed in `WORKSPACES`. The default is `claude_workspace` inside the repo.
+- Useful settings:
+  ```ini
+  DEFAULT_ENGINE=local        # local | claude | auto
+  CC_MODEL=sonnet             # sonnet | opus | haiku
+  CC_PERMISSION=edit          # read | edit | full (full asks before every job)
+  CC_MAX_BUDGET_USD=1.0       # per job
+  CC_DAILY_BUDGET_USD=5.0     # per day
+  ```
+- **No Anthropic account?** Claude Code can run on your Ollama model: in `/panel` → ⚙️ Settings, set the backend to **🦙 Ollama**. See [docs/SETUP.md](docs/SETUP.md#claude-code-on-your-own-model-no-anthropic-account).
+
+### 7. First run
+
+```powershell
+python -m llmbot
+```
+
+You should see `Logged in as YourBot#1234`, and `Telegram: logged in as @yourbot` if you set that up. Logs also go to `data\bot.log`.
+
+- **Discord:** type `/help` in your server, then `/panel`. Mention the bot (`@YourBot hi`) or use `/ask`.
+- **Telegram:** open your bot and send `/start`. It replies with **your Telegram user id**. Put it in `.env`:
+  ```ini
+  TELEGRAM_ALLOWED_USER_IDS=123456789
+  ```
+  Stop the bot with `Ctrl+C` and start it again. From then on, just message it.
+
+### 8. Run it in the background and at logon (Windows)
+
+```powershell
+.\scripts\bot_control.ps1 install   # adds "Discord LLM Bot" to Startup apps
+.\scripts\bot_control.ps1 start     # starts it now, with no window
+```
+
+| Command | Does |
+|---|---|
+| `status` | Shows whether it's running and whether it's in Startup apps |
+| `stop` / `start` / `restart` | Stops, starts or restarts the background bot. Use `restart` after changing `.env` or pulling updates |
+| `log` | Follows `data\bot.log` |
+| `remove` | Takes it out of Startup apps |
+
+Only one copy can run at a time. A second one exits on its own, so stop the background copy before running `python -m llmbot` in a terminal.
+
+### Updating
+
+```powershell
+git pull
+pip install -r requirements.txt
+.\scripts\bot_control.ps1 restart
+```
+
+Your settings, tasks, reminders and logs are in `data/` and `.env`, which git never touches.
+
+---
+
+## Using the bot
+
+| | Discord | Telegram |
+|---|---|---|
+| Ask something | `@YourBot …`, `/ask …`, reply to the bot, or DM it | Just message it (in groups, @mention it or reply to it) |
+| Settings | `/panel` | `/panel` |
+| Switch engine | `/panel` → engine, or `/claude …` / `/local …` for one message | `/claude …`, `/local …` |
+| Stop / full log | `/stop`, `/log` | `/stop`, `/log` |
+| New Claude Code session | `/panel` → 🆕 | `/new` |
+| Reminders | "remind me in 10 min to…" or `/remind` | same, or `/remind in 10 min \| take meds` |
+| Scheduled prompts | "every weekday at 9 give me a news brief" or `/schedule` | same, or `/schedule 0 9 * * 1-5 \| prompt` |
+| List and cancel them | `/tasks` | `/tasks` |
+| Free the GPU | `/unload` | `/unload` |
+
+Voice notes, images and files work on both. See [docs/SETUP.md](docs/SETUP.md) for how each feature behaves and what it costs.
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| Slash commands don't show up | Set `GUILD_ID` for instant sync. Global commands can take up to an hour. Restart Discord (`Ctrl+R`). |
+| The bot ignores @mentions | Turn on **Message Content Intent** (step 2), and check that your id is in `ALLOWED_USER_IDS`. |
+| "Missing Access" in a private channel | Add the bot to the channel: Edit Channel → Permissions. `/panel` warns you about this. |
+| Telegram answers nothing | Your id must be in `TELEGRAM_ALLOWED_USER_IDS` (send `/start` to get it), then restart. |
+| The Claude Code engine is missing | You're not an owner: set `OWNER_IDS` (with no owners at all, Claude Code is off). Or `claude` isn't found: set `CLAUDE_BIN`. |
+| The local model is slow | Run `ollama ps`. If it isn't 100% GPU, use a smaller model or context. |
+| "Another copy of the bot is already running" | Run `.\scripts\bot_control.ps1 stop` first. |
+| Anything else | Check `data\bot.log`, or run `.\scripts\bot_control.ps1 log`. |
+
+---
+
+## Project layout
+
+```
+llmbot/
+  core.py         backend: engines, Claude Code runner, tools, reminders, scheduler, settings + the Discord front end
+  telegram.py     Telegram front end (Bot API over httpx): renders Discord-style output, maps buttons/menus
+  __main__.py     python -m llmbot   (python -m llmbot --mcp-web = the web-tools MCP server Claude Code starts)
+tests/
+  test_suites.py  pytest entry point: runs each suite in its own process
+  suites/         the suites (live_* and the live parts of others run only with LLMBOT_LIVE=1)
+  fixtures/       sample Claude Code stream-json output, a short voice note
+scripts/
+  bot_control.ps1 install / start / stop / restart / status / log
+docs/SETUP.md     detailed guide: every feature, costs, security
+.env.example      every setting, documented
+data/             runtime state, created on first run (not in git)
+```
+
+## Development
+
+```powershell
+pip install -r requirements.txt pytest
+pytest                            # offline: no tokens, network or cost
+$env:LLMBOT_LIVE = "1"; pytest    # also real Claude Code (haiku, a few cents), Ollama and Whisper
+```
+
+- The suites load the bot with no `.env` and a temporary `data/` folder, so they never touch your real settings, tasks or reminders.
+- CI runs the offline suites on Windows on every push.
+- Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+Not chosen yet.
