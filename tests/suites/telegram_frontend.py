@@ -78,6 +78,28 @@ async def main():
     check(r("snake_case_name and 2*3*4") == "snake_case_name and 2*3*4", "no false italics")
     check(tg.plain("**b** -# x", CHAT) == "b -# x" and tg.plain("-# grey", CHAT) == "grey", "plain fallback")
 
+    print("== stats line: spoiler by default, off per chat, warnings always visible")
+    line = B.stats_line(["haiku", "$0.007", "11k ctx", "session ab12cd34"], [])
+    warned = B.stats_line(["haiku", "$0.007"], ["long chat, send /compact"])
+    check(line.startswith("-# haiku · $0.007") and B.quiet_grey(line) == line, "Discord line unchanged (mark is invisible)")
+    check(r("Answer\n" + line) == "Answer\n<i><tg-spoiler>haiku · $0.007 · 11k ctx · session ab12cd34</tg-spoiler></i>",
+          "spoiler by default")
+    check(r(warned).endswith("</tg-spoiler> · long chat, send /compact</i>"), "warning stays outside the spoiler")
+    check(r("-# ⏰ Reminder set") == "<i>Reminder set</i>", "other grey lines unchanged")
+    B.update_settings(CHAT, tg_stats="off")
+    check(r("Answer\n" + line) == "Answer", "off: line dropped")
+    check(r(warned) == "<i>long chat, send /compact</i>", "off: warnings still shown")
+    n = len(tg.calls)
+    await T.TgChannel(tg, CHAT).send(line)
+    check(len(tg.calls) == n, "off: a message holding only the stats line isn't sent")
+    B.update_settings(CHAT, tg_stats="spoiler")
+    pv = B.PermView(CHAT)
+    toggle = next(c for c in pv.children if getattr(c, "custom_id", "") == "pv:stats")
+    check(toggle.label == "Stats line: turn off" and "Stats line" in [f.name for f in B.perm_embed(CHAT).fields],
+          "Settings has the toggle on Telegram")
+    check(not any(getattr(c, "custom_id", "") == "pv:stats" for c in B.PermView(900000000000000001).children),
+          "and not on Discord")
+
     print("== allow-list")
     B.TELEGRAM_ALLOWED_USER_IDS.clear(); B.TELEGRAM_OWNER_IDS.clear()
     await tg._dispatch({"message": msg(STRANGER, "/start", chat=STRANGER)})

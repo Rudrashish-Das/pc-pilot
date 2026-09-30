@@ -438,8 +438,28 @@ class Telegram:
         return mention
 
     def _render(self, text: str, chat_id: int, as_html: bool = True) -> str:
-        return render(self.core.quiet_grey(text or ""), as_html=as_html, tz=self.core.TZ,
+        return render(self.core.quiet_grey(self._stats(text or "", chat_id)), as_html=as_html, tz=self.core.TZ,
                       mention=self._mention(chat_id), where=self.core.where)
+
+    def _stats(self, text: str, chat_id: int) -> str:
+        """Telegram has no small grey text, so the routine part of a stats line (before core.STATS_MARK) becomes a
+        tap-to-reveal spoiler, or is dropped when the chat turned it off. Warnings after the mark stay visible."""
+        mark = self.core.STATS_MARK
+        if mark not in text:
+            return text
+        off = self.core.get_settings(chat_id).get("tg_stats") == "off"
+        out = []
+        for ln in text.split("\n"):
+            if ln.startswith("-# ") and mark in ln:
+                stats, _, warn = ln[3:].partition(mark)
+                warn = warn.strip().lstrip("·").strip()
+                if off:
+                    ln = f"-# {warn}" if warn else None
+                else:
+                    ln = f"-# ||{stats.strip()}||" + (f" · {warn}" if warn else "")
+            if ln is not None:
+                out.append(ln)
+        return "\n".join(out)
 
     def plain(self, text: str, chat_id: int) -> str:
         return self._render(text, chat_id, as_html=False)
@@ -548,6 +568,8 @@ class Telegram:
 
     async def send(self, chat_id: int, content: str | None, *, embed=None, view=None, files=(), reply_to=None) -> TgMessage:
         msg = TgMessage(self, chat_id, None, content, embed, view)
+        if content and embed is None and view is None and not files and not self._render(content, chat_id):
+            return msg  # only a stats line, and this chat turned it off
         if content or embed is not None or view is not None or not files:
             sent = await self._send_text(chat_id, content, embed, self._markup(msg), reply_to)
             msg.message_id = msg.id = sent["message_id"]

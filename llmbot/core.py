@@ -336,6 +336,7 @@ def default_settings() -> dict:
         "cc_session_setup": None,  # CC_SETUP_FINGERPRINT the session was created under
         "style": REPLY_STYLE,  # chat | cards
         "voice": VOICE_DEFAULT,  # all | replies | off
+        "tg_stats": "spoiler",  # Telegram only: the stats line as a tap-to-reveal spoiler, or "off"
     }
 
 
@@ -2156,6 +2157,15 @@ def quiet_grey(text: str) -> str:
                      for ln in text.split("\n"))
 
 
+# Ends the routine part of a stats line (model, cost, context, session). Invisible on Discord; lets a front end
+# that can't make text small/grey (Telegram) hide that part while keeping any warnings after it visible.
+STATS_MARK = "\u2063"  # INVISIBLE SEPARATOR
+
+
+def stats_line(parts: list[str], warnings: list[str]) -> str:
+    return "-# " + " · ".join(parts) + STATS_MARK + "".join(" · " + w for w in warnings)
+
+
 def fmt_usd(x: float) -> str:
     return "<$0.001" if 0 < x < 0.001 else f"${x:.3f}"
 
@@ -2163,6 +2173,7 @@ def fmt_usd(x: float) -> str:
 def chat_stats(job: CCJob, notes: list[str]) -> str:
     """The one small grey line under a chat reply: model, cost, today's spend, context, plus warnings if any."""
     parts: list[str] = []
+    warnings: list[str] = []
     if job.snap.note:
         parts.append("new chat")
     if job.snap.backend == "anthropic":
@@ -2181,19 +2192,19 @@ def chat_stats(job: CCJob, notes: list[str]) -> str:
     if ctx:
         parts.append(ctx_text(ctx, job.ctx_limit, job.ctx_approx))
         if job.ctx_limit and ctx >= job.ctx_limit * 0.9:
-            parts.append("context almost full, older messages will be dropped: send /compact")
+            warnings.append("context almost full, older messages will be dropped: send /compact")
         elif compact_at(job.ctx_limit) and ctx >= compact_at(job.ctx_limit):
-            parts.append("long chat, send /compact")
+            warnings.append("long chat, send /compact")
     if job.parser.session_id:  # same short id as the cards and `claude --resume <id>` in a terminal
         parts.append(f"session {job.parser.session_id[:8]}")
     denied = sorted({d.get("tool_name", "?") for d in (job.parser.result or {}).get("permission_denials") or []})
     if denied:
-        parts.append(f"⛔ blocked {', '.join(denied)} ({job.snap.perm} mode, change in /panel)")
+        warnings.append(f"⛔ blocked {', '.join(denied)} ({job.snap.perm} mode, change in /panel)")
     if notes:
-        parts.append("⚠️ " + "; ".join(n.replace("`", "") for n in notes))
+        warnings.append("⚠️ " + "; ".join(n.replace("`", "") for n in notes))
     if job.outcome() == "stopped":
-        parts.append("stopped")
-    return "-# " + " · ".join(parts)
+        warnings.append("stopped")
+    return stats_line(parts, warnings)
 
 
 async def _send_chat_reply(job: CCJob) -> bool:
@@ -2421,8 +2432,8 @@ async def answer_local(channel, user_id: int, prompt: str, out: Out, *, model: s
         mem = len(_history.get(ch_id, [])) // 2
         parts = ([host_label(LLM_URL, model), "local engine", f"{time.monotonic() - started:.0f}s",
                   ctx_text(ctx.max_chars // 4, limit, True), f"memory {mem}/{MAX_HISTORY_TURNS}"]
-                 + (["used " + ", ".join(res.tools_used)] if res.tools_used else []) + ([note] if note else []))
-        footer.append("-# " + " · ".join(parts))
+                 + (["used " + ", ".join(res.tools_used)] if res.tools_used else []))
+        footer.append(stats_line(parts, [note] if note else []))
     else:
         if res.tools_used:
             footer.append("-# used: " + ", ".join(res.tools_used))
@@ -2762,6 +2773,9 @@ def perm_embed(channel_id: int) -> discord.Embed:
     if VOICE_ENABLED:
         vm = VOICE_MODES[s["voice"]]
         e.add_field(name="Voice notes", value=f"{vm[0]} **{vm[1].split(': ')[1]}**: {vm[2]}", inline=False)
+    if is_telegram_id(channel_id):
+        e.add_field(name="Stats line", value="**Tap to reveal**: hidden behind a spoiler under each reply"
+                    if s["tg_stats"] != "off" else "**Off**: not shown (warnings still are)", inline=False)
     e.add_field(name="Permissions", value=f"{p[0]} **{p[1]}**: {p[2]}", inline=False)
     e.add_field(name="Workspace", value=redact(f"`{s['workspace']}` → `{WORKSPACES[s['workspace']]}`"), inline=False)
     e.set_footer(text="Changing the workspace starts a new Claude Code session.")
@@ -2799,6 +2813,12 @@ class PermView(GuardedView):
         back = discord.ui.Button(custom_id="pv:back", label="Back to panel", emoji="⬅️", style=discord.ButtonStyle.primary)
         back.callback = self.on_back
         self.add_item(back)
+        if is_telegram_id(channel_id):  # Telegram can't show small grey text (Discord's rows are full anyway)
+            off = s["tg_stats"] == "off"
+            stats = discord.ui.Button(custom_id="pv:stats", label="Stats line: show" if off else "Stats line: turn off",
+                                      emoji="📊", style=discord.ButtonStyle.secondary)
+            stats.callback = self.on_stats
+            self.add_item(stats)
 
     async def _refresh(self, inter):
         self.stop()
@@ -2822,6 +2842,11 @@ class PermView(GuardedView):
 
     async def on_style(self, inter):
         update_settings(self.channel_id, style=inter.data["values"][0])
+        await self._refresh(inter)
+
+    async def on_stats(self, inter):
+        off = get_settings(self.channel_id)["tg_stats"] == "off"
+        update_settings(self.channel_id, tg_stats="spoiler" if off else "off")
         await self._refresh(inter)
 
 

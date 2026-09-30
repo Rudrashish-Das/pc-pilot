@@ -2,6 +2,10 @@
 
 Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `bot_v22.py`). From 0.23.0 on, git history is the record.
 
+## 0.24.0
+- Telegram: the stats line is a tap-to-reveal spoiler, because Telegram has no small grey text. It can be turned off per chat in `/panel` → ⚙️ Settings. Warnings (compact hints, blocked tools, unbacked claims) stay visible either way.
+- Tests: Telegram-only and Discord-only setups.
+
 ## 0.23.0 — repository layout
 - The code is now the `llmbot` package: `llmbot/core.py` (was `bot_v23.py`) and `llmbot/telegram.py` (was `telegram_v1.py`). Run it with `python -m llmbot`.
 - Runtime files moved to `data/`: `settings.json`, `tasks.json`, `reminders.json`, `usage.json`, `mcp_web.json` and `bot.log`. `LLMBOT_DATA_DIR` and `LLMBOT_ENV_FILE` override the locations.

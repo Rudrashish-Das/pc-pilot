@@ -64,7 +64,7 @@ Using it:
 - In a private chat, just send messages, photos, files (up to 20 MB, Telegram's limit for bots) or voice notes. In a group, @mention the bot or reply to it.
 - Commands: `/panel`, `/new` (new Claude Code session), `/compact`, `/stop`, `/tasks`, `/remind in 10 min | take meds`, `/schedule 0 9 * * 1-5 | prompt`, `/claude`, `/local`, `/reset`, `/log`, `/unload`, `/help`. They appear in Telegram's `/` menu.
 - The buttons are the same as on Discord. Dropdowns open as a list of options (⬅️ Back returns). **Edit** and **Follow up** ask you to send the text as your next message.
-- The small grey line is shown in italics.
+- Telegram can't show small grey text. The stats line under each reply (model, cost, context, session) is hidden behind a spoiler: tap it to read it. To remove it completely in a chat, use `/panel` → ⚙️ Settings → **📊 Stats line: turn off**. Warnings, such as "long chat, send /compact", always stay visible. Other small notes (reminder set, heard: …) are shown in italics.
 - Telegram has no "only you can see this" messages: `/panel` and similar replies go into the chat, and short notices pop up on the button you tapped. Only allowed users can press the buttons.
 - Messages sent while the bot was off for more than 30 minutes are skipped instead of answered late.
 - Telegram only: leave `DISCORD_TOKEN` empty.
