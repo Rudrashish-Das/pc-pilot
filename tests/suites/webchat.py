@@ -102,6 +102,36 @@ async def main():
         pm2 = next(m for m in d["messages"] if m["id"] == pm["id"])
         check(pm2["v"] > pm["v"], "the panel message was edited in place")
 
+        print("== /usage and /skills in the web chat")
+        B._usage["plan"] = {"at": 1, "status": "allowed", "windows": {"five_hour": {"utilization": 0.42, "resets_at": None}}}
+        checked = []
+
+        async def fake_check():
+            checked.append(1)
+            B._usage["plan"]["windows"]["five_hour"]["utilization"] = 0.5
+        B.check_plan_now = fake_check
+        v2 = (await c.get(f"/api/chats/{cid}?since=0")).json()["v"]
+        await c.post(f"/api/chats/{cid}/send", files={"text": (None, "/usage")})
+
+        async def usage_msg():
+            d = (await c.get(f"/api/chats/{cid}?since={v2}")).json()
+            return next((m for m in d["messages"] if m.get("embed") and "Usage" in str(m["embed"])), None)
+        um = await wait_for(usage_msg)
+        check(um and "5-hour limit" in str(um["embed"]) and "42%" in str(um["embed"]), "usage panel posted")
+        btn = next(x for x in um["controls"] if x["type"] == "button")
+        await c.post(f"/api/chats/{cid}/press", json={"mid": um["id"], "i": btn["i"]})
+        d = (await c.get(f"/api/chats/{cid}?since=0")).json()
+        check(checked and "50%" in str(next(m for m in d["messages"] if m["id"] == um["id"])["embed"]),
+              "🔄 check now works from the web (owner by access key)")
+        await c.post(f"/api/chats/{cid}/send", files={"text": (None, "/skills")})
+
+        async def skills_msg():
+            d = (await c.get(f"/api/chats/{cid}?since={v2}")).json()
+            return next((m for m in d["messages"] if m["role"] == "bot" and "skill" in m["text"].lower()), None)
+        check(await wait_for(skills_msg), "/skills answers")
+        cmds = {x["name"] for x in (await c.get("/api/chats")).json()["commands"]}
+        check({"usage", "skills"} <= cmds, "both in the page's / autocomplete")
+
         print("== reminder with buttons")
         rem = B.add_reminder("in 5 min", "stretch", int(cid), uid)
         await B.fire_reminder(rem["id"])
