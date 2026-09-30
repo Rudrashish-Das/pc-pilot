@@ -4175,12 +4175,25 @@ class LLMBot(discord.Client):
         if GUILD_IDS or GUILD_ALL:
             for gid in GUILD_IDS:  # "all": synced in on_ready, once the server list is known
                 await self._sync_guild(gid)
-            # Per-server mode: drop global copies left from global mode, or every command would show twice.
-            if await self.tree.fetch_commands():
-                await self.http.bulk_upsert_global_commands(self.application_id, [])
-                log.info("Removed global slash commands (per-server mode)")
+            await self._sync_dm_commands()
         else:
             await self.tree.sync()
+
+    async def _sync_dm_commands(self) -> None:
+        """Per-server mode: servers get their own instant copies, and the bot's DMs need global commands. Global
+        copies limited to DMs (Discord "contexts") show there without appearing twice in servers."""
+        saved = {cmd: cmd.allowed_contexts for cmd in self.tree.get_commands()}
+        dm_only = app_commands.AppCommandContext(guild=False, dm_channel=True, private_channel=False)
+        try:
+            for cmd in saved:
+                cmd.allowed_contexts = dm_only
+            await self.tree.sync()
+            log.info("Slash commands in DMs with the bot: %d", len(saved))
+        except discord.HTTPException as e:
+            log.warning("Couldn't add slash commands to DMs: %s", e)
+        finally:
+            for cmd, ctx in saved.items():  # per-server syncs later (new servers) send them without the DM limit
+                cmd.allowed_contexts = ctx
 
     async def on_guild_join(self, guild: discord.Guild):
         if GUILD_ALL:

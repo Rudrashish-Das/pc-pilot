@@ -3,6 +3,7 @@
 Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `bot_v22.py`). From 0.23.0 on, git history is the record.
 
 ## Unreleased
+- Slash commands work in DMs with the bot when `GUILD_ID` is set: global copies limited to DMs (Discord command contexts), so servers still get their instant per-server copies without seeing each command twice.
 - `GUILD_ID=all`: slash commands in every server the bot is in, and in servers it joins later, instantly. Before, a server missing from `GUILD_ID` had no slash commands at all.
 - Plan limits show the clock time they reset, not only how long until then: "resets at 14:30 (in 1 hour)", "on Sunday, 4 Oct, 14:30 (in 3 days)".
 - The dashboard chat refreshes its `/` command list when the bot restarts (a page left open kept offering the old list).
