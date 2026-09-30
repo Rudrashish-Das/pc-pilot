@@ -21,6 +21,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from collections import deque
@@ -39,6 +40,7 @@ from apscheduler.triggers.date import DateTrigger
 from discord import app_commands
 from dotenv import load_dotenv
 
+from llmbot import __version__
 from llmbot import hints as hints_mod
 from llmbot import logs as logs_mod
 from llmbot import store as store_mod
@@ -357,6 +359,11 @@ LOG_KEEP_DAYS = _num("LOG_KEEP_DAYS", 0)  # 0 = only the size cap
 LOG_LEVEL = _env("LOG_LEVEL", "INFO").upper()
 logs_mod.configure(LOG_MAX_TOTAL_MB, LOG_FILE_MB, LOG_COMPRESS, LOG_KEEP_DAYS)
 HISTORY_FILE = DATA_DIR / "history.json"
+# Web dashboard (llmbot/dashboard.py): open http://<this PC's LAN address>:DASHBOARD_PORT from a phone on the same
+# network. DASHBOARD_TOKEN is the access key; empty = one is generated and kept in data/dashboard.key.
+DASHBOARD_PORT = int(_num("DASHBOARD_PORT", 8765))  # 0 = off
+DASHBOARD_HOST = _env("DASHBOARD_HOST", "0.0.0.0")  # 127.0.0.1 = this PC only
+DASHBOARD_TOKEN = _env("DASHBOARD_TOKEN")
 STORE: Any = store_mod.FileStore(DATA_DIR)
 
 _settings: dict[str, dict] = {}
@@ -452,6 +459,101 @@ def where(channel_id: int) -> str:
     """How to name a channel in lists: a Discord channel mention, or 'Telegram: <chat name>'."""
     fe = frontend_for(channel_id)
     return fe.where(channel_id) if fe else f"channel {channel_id}"
+
+
+def chat_label(channel_id: int) -> str:
+    """A readable chat name for the dashboard: '#general · My Server', 'DM with Alex', 'Telegram: Alex (private)'."""
+    if is_telegram_id(channel_id):
+        return where(channel_id)
+    ch = bot.get_channel(channel_id)
+    if ch is None:
+        return f"Discord channel {channel_id}"
+    if isinstance(ch, discord.DMChannel):
+        return f"DM with {ch.recipient.display_name}" if ch.recipient else "Discord DM"
+    guild = getattr(ch, "guild", None)
+    return f"#{getattr(ch, 'name', channel_id)}" + (f" · {guild.name}" if guild else "")
+
+
+def user_label(user_id: int) -> str:
+    if is_telegram_id(user_id):
+        return (getattr(_telegram, "_names", {}) or {}).get(user_id) or f"Telegram user {user_id}"
+    u = bot.get_user(user_id)
+    return u.display_name if u else f"Discord user {user_id}"
+
+
+# =============================================================================
+# Activity: what the bot is doing and has done, for the web dashboard (llmbot/dashboard.py). Events are kept in
+# memory (the latest EVENTS_KEEP) and in the store (data/events.jsonl or Postgres), so history survives restarts.
+# =============================================================================
+EVENTS_KEEP = 500
+STARTED_AT = time.time()
+_events: deque = deque(maxlen=EVENTS_KEEP)
+_event_lock = threading.Lock()  # the log handler can run in worker threads (Whisper)
+_event_last_id = 0
+_inflight: dict[int, dict] = {}  # work in progress other than Claude Code jobs (local replies, voice notes)
+
+
+def note_event(kind: str, text: str, *, level: str = "info", channel_id: int | None = None,
+               user_id: int | None = None, **data) -> dict:
+    """Record something that happened. kind groups events in the dashboard's filters (local, claude, reminder,
+    task, power, model, voice, bot, warning, error); data holds extra fields shown with it (None values dropped)."""
+    global _event_last_id
+    now = time.time()
+    with _event_lock:
+        _event_last_id = eid = max(int(now * 1000), _event_last_id + 1)  # unique, and sorts by time
+    ev = {k: (redact(v) if isinstance(v, str) else v) for k, v in data.items() if v is not None}
+    try:
+        if channel_id:
+            ev["where"] = chat_label(channel_id)
+        if user_id:
+            ev["who"] = user_label(user_id)
+    except Exception:
+        pass
+    ev.update(id=eid, ts=now, kind=kind, level=level, text=clip(redact(text), 2000), channel_id=channel_id,
+              user_id=user_id)
+    _events.append(ev)
+    try:
+        STORE.record_event(ev)
+    except Exception:
+        pass  # the store logs its own failures (as warnings, which the event handler skips for llmbot.store)
+    return ev
+
+
+@contextlib.contextmanager
+def activity(kind: str, text: str, channel_id: int | None = None, user_id: int | None = None, **data):
+    """Show work in progress on the dashboard ('now') while the block runs."""
+    with _event_lock:
+        key = max(int(time.time() * 1000), max(_inflight, default=0) + 1)
+        _inflight[key] = {"kind": kind, "text": clip(redact(text), 500), "channel_id": channel_id,
+                          "user_id": user_id, "started": time.time(), **data}
+    try:
+        yield
+    finally:
+        _inflight.pop(key, None)
+
+
+class EventLogHandler(logging.Handler):
+    """Warnings and errors from any logger also appear in the activity feed."""
+    _busy = threading.local()
+
+    def __init__(self):
+        super().__init__(logging.WARNING)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.name.startswith("llmbot.store") or getattr(self._busy, "on", False):
+            return  # store failures would loop (recording the event fails again)
+        self._busy.on = True
+        try:
+            text = record.getMessage()
+            if record.exc_info and record.exc_info[1] is not None:
+                text += f": {type(record.exc_info[1]).__name__}: {record.exc_info[1]}"
+            error = record.levelno >= logging.ERROR
+            note_event("error" if error else "warning", text, level="error" if error else "warning",
+                       source=record.name)
+        except Exception:
+            pass
+        finally:
+            self._busy.on = False
 
 # =============================================================================
 # Text utilities
@@ -697,6 +799,8 @@ def add_task(cron: str, prompt: str, description: str, channel_id: int, user_id:
     _tasks[task["id"]] = task
     _schedule_job(task)
     _save_tasks()
+    note_event("task", task["description"], channel_id=channel_id, user_id=user_id, status="scheduled", ref=task["id"],
+               engine=engine, cron=task["cron"] or None, due=task["at"])
     return task
 
 
@@ -710,6 +814,8 @@ def cancel_task(task_id: str, user_id: int) -> str:
     if scheduler.get_job(task["id"]):
         scheduler.remove_job(task["id"])
     _save_tasks()
+    note_event("task", task["description"], channel_id=task["channel_id"], user_id=user_id, status="cancelled",
+               ref=task["id"])
     return f"Cancelled task {task['id']} ({task['description']})."
 
 
@@ -882,6 +988,7 @@ def add_reminder(when: str | datetime, text: str, channel_id: int, user_id: int)
     _schedule_reminder(r)
     _save_reminders()
     log.info("Reminder %s set for %s in channel %s", r["id"], r["when"], channel_id)
+    note_event("reminder", text, channel_id=channel_id, user_id=user_id, status="set", ref=r["id"], due=r["when"])
     return r
 
 
@@ -895,6 +1002,7 @@ def cancel_reminder(rid: str, user_id: int) -> str:
     if scheduler.get_job(f"rem-{r['id']}"):
         scheduler.remove_job(f"rem-{r['id']}")
     _save_reminders()
+    note_event("reminder", r["text"], channel_id=r["channel_id"], user_id=user_id, status="cancelled", ref=r["id"])
     return f"Cancelled reminder {r['id']} ({r['text']})."
 
 
@@ -956,6 +1064,8 @@ async def fire_reminder(rid: str) -> None:
         log.error("Reminder %s could not be delivered (channel %s)", rid, r["channel_id"])
         return
     late = now_local() - when > REMINDER_LATE
+    note_event("reminder", r["text"], channel_id=r["channel_id"], user_id=uid, status="late" if late else "fired",
+               ref=rid, due=r["when"])
     text = redact(f"⏰ <@{uid}> {r['text']}")
     if late:
         text += f"\n-# late: this was due {discord.utils.format_dt(when, 'f')} (bot was offline or the laptop was asleep)"
@@ -1169,6 +1279,10 @@ def load_state() -> None:
     _reminders.update({r["id"]: r for r in STORE.load("reminders", REMINDERS_FILE, [])})
     _usage.update(STORE.load("usage", USAGE_FILE, {}))
     _history.update({int(k): v for k, v in STORE.load("history", HISTORY_FILE, {}).items()})
+    try:
+        _events.extend(reversed(STORE.recent_events(EVENTS_KEEP)))
+    except Exception as e:
+        log.warning("Could not load the activity history: %s", oneline(redact(e), 200))
     log.info("Storage: %s", STORE.describe())
 
 
@@ -1305,6 +1419,7 @@ async def unload_model(root: str, model: str) -> bool:
     if ok:
         _loaded_models.get(root, set()).discard(_tagged(model))
         log.info("Unloaded %s from memory", model)
+        note_event("model", f"Unloaded {model} from memory")
     return ok
 
 
@@ -1361,7 +1476,8 @@ async def transcribe(data: bytes) -> tuple[str, float]:
     global _whisper_last
     async with _whisper_lock:
         try:
-            return await asyncio.to_thread(_transcribe_sync, data)
+            with activity("voice", f"Transcribing a voice note ({len(data) // 1024} KB)"):
+                return await asyncio.to_thread(_transcribe_sync, data)
         finally:
             _whisper_last = time.monotonic()
 
@@ -2097,7 +2213,12 @@ async def _finalize(job: CCJob) -> None:
                       "cost_usd": job.cost_this, "session_cost_usd": job.cost_session,
                       "context_tokens": job.parser.context_tokens, "seconds": job.elapsed(),
                       "session_id": job.parser.session_id, "prompt": clip(redact(job.task), 500)})
-    posted = await (_send_chat_reply(job) if job.chat else _send_result_card(job))
+    note_event("claude", job.task, level="error" if job.outcome() == "error" else "info", channel_id=ch_id,
+               user_id=job.user_id, status=job.outcome(), job=job.id, backend=job.snap.backend, model=job.snap.model,
+               perm=job.snap.perm, scheduled=job.scheduled or None, turns=r.get("num_turns"), cost=job.cost_this,
+               seconds=job.elapsed(), context=job.parser.context_tokens, error=job.error,
+               reply=clip(r.get("result") or "", 600) or None, notices=job.notices or None)
+    posted =await (_send_chat_reply(job) if job.chat else _send_result_card(job))
     if deletes and not posted:  # never delete a file the user didn't receive
         log.warning("Reply for job %s not posted; skipped deleting %d file(s)", job.id, len(deletes))
         deletes = []
@@ -2560,8 +2681,11 @@ async def answer_local(channel, user_id: int, prompt: str, out: Out, *, model: s
     ctx = ToolCtx(ch_id, user_id, tools)
     started = time.monotonic()
     try:
-        res = await run_local(prompt, model, ctx, list(_history.get(ch_id, [])) if use_history else None)
+        with activity("local", prompt, ch_id, user_id, model=model):
+            res = await run_local(prompt, model, ctx, list(_history.get(ch_id, [])) if use_history else None)
     except httpx.HTTPError as e:
+        note_event("local", prompt, level="error", channel_id=ch_id, user_id=user_id, model=model,
+                   error=f"could not reach the local model ({type(e).__name__})")
         await out(content=with_hint(f"⚠️ Could not reach the local model ({type(e).__name__}).", str(e),
                                     where="local", model=model))
         return
@@ -2571,6 +2695,8 @@ async def answer_local(channel, user_id: int, prompt: str, out: Out, *, model: s
                                     where="local", model=model))
         return
     text = redact(res.text) or "_(empty reply)_"
+    note_event("local", prompt, channel_id=ch_id, user_id=user_id, model=model,
+               seconds=round(time.monotonic() - started, 1), tools=res.tools_used or None, reply=clip(text, 600))
     if use_history:
         remember(ch_id, res.sent or prompt, text)
     chat = get_settings(ch_id)["style"] == "chat"
@@ -2751,9 +2877,14 @@ async def run_scheduled_task(task_id: str) -> None:
         head += "\n-# Claude Code isn't available for this task's creator; used the local model."
     model = get_settings(task["channel_id"])["local_model"]
     ctx = ToolCtx(task["channel_id"], task["created_by"], READONLY_TOOLS)  # read-only, no new tasks
+    started = time.monotonic()
     try:
-        res = await run_local(task["prompt"], model, ctx, None)
+        with activity("task", task["description"], task["channel_id"], uid, model=model):
+            res = await run_local(task["prompt"], model, ctx, None)
         text = res.text or "_(empty reply)_"
+        note_event("task", task["description"], channel_id=task["channel_id"], user_id=uid, status="ran",
+                   ref=task_id, engine="local", model=model, seconds=round(time.monotonic() - started, 1),
+                   tools=res.tools_used or None, reply=clip(strip_think(text), 600))
         if res.tools_used:
             text += "\n-# used: " + ", ".join(res.tools_used)
     except Exception as e:
@@ -3256,6 +3387,7 @@ class LLMBot(discord.Client):
 
     async def on_ready(self):
         log.info("Logged in as %s (commands: %s)", self.user, ", ".join(map(str, GUILD_IDS)) or "global")
+        note_event("bot", f"Discord connected as {self.user}")
         if self._cleaned:
             return
         self._cleaned = True
@@ -3398,6 +3530,14 @@ async def core_start() -> None:
         except Exception as e:
             log.warning("claude --version failed: %s", e)
     log.info("Claude Code CLI: %s (%s)", binary or "not found", CLAUDE_VERSION)
+    note_event("bot", f"Bot started (llmbot {__version__}, storage: {STORE.kind})")
+    if DASHBOARD_PORT:
+        from llmbot import dashboard
+
+        try:
+            await dashboard.start(sys.modules[__name__])
+        except Exception as e:  # e.g. the port is taken: the bot itself keeps working
+            log.error("Dashboard not started on port %s: %s", DASHBOARD_PORT, oneline(redact(e), 200))
     if TELEGRAM_BOT_TOKEN:
         from llmbot import telegram as telegram_frontend  # the Telegram front end; uses this module as its backend
 
@@ -3407,6 +3547,9 @@ async def core_start() -> None:
 
 
 async def core_stop() -> None:
+    note_event("bot", "Bot stopping")
+    if "llmbot.dashboard" in sys.modules:
+        await sys.modules["llmbot.dashboard"].stop()
     if _telegram is not None:
         await _telegram.close()
     if _cc_current and _cc_current.proc:
@@ -3551,6 +3694,7 @@ def help_text(user_id: int) -> str:
         "then with web search and pings you. `/schedule <cron> <prompt>` for repeating ones · `/tasks`: list and cancel",
         "`/reset`: clear the local model's chat history · `/unload`: free GPU memory now",
         "`/power` (owners): lock, sleep, hibernate, restart or shut down the laptop; the bot posts when it's back",
+        "`/dashboard` (owners): web page with what the bot is doing and has done, for your phone on the same Wi-Fi",
         "📎 **Images and files**: attach them to your message (or `file:` in `/ask`); Claude Code sees images and "
         "PDFs and reads text/code. Kept for a day in the workspace's discord_uploads folder.",
         *(["🎙️ **Voice notes**: send one here and it's transcribed on the laptop and answered like a typed "
@@ -3596,6 +3740,16 @@ async def log_cmd(inter: discord.Interaction):
         await inter.response.send_message("No Claude Code reply in this channel since the bot started.", ephemeral=True)
         return
     await inter.response.send_message(file=transcript_file(job), ephemeral=True)
+
+
+@bot.tree.command(name="dashboard", description="Link to the web dashboard: live activity and history (only you see it)")
+async def dashboard_cmd(inter: discord.Interaction):
+    if not is_owner(inter.user.id):
+        await inter.response.send_message("⛔ Only owners can open the dashboard.", ephemeral=True)
+        return
+    from llmbot import dashboard
+
+    await inter.response.send_message(dashboard.link_text(), ephemeral=True)
 
 
 @bot.tree.command(name="unload", description="Free GPU memory now by unloading the local model(s)")
@@ -3682,6 +3836,7 @@ async def do_power(action: str, channel_id: int, user_id: int) -> str | None:
     if not power_supported():
         return "Power controls only work when the bot runs on Windows."
     log.info("Power: %s requested by %s in %s", action, user_id, channel_id)
+    note_event("power", f"{action} requested", channel_id=channel_id, user_id=user_id, action=action)
     if action == "lock":
         return None if _lock() else "Windows refused to lock the screen."
     if action == "cancel":
@@ -3736,6 +3891,8 @@ async def power_watch() -> None:
         await asyncio.sleep(10)
         now = time.time()
         gap, _power_tick = now - _power_tick, now
+        if gap > 60:
+            note_event("bot", f"Resumed after about {_dur(gap)} asleep or suspended")
         rec = power_pending()
         if not rec:
             continue
@@ -3858,6 +4015,7 @@ def _setup_logging() -> None:
     fh = logs_mod.CappedRotatingFileHandler(DATA_DIR / "bot.log")
     fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s"))
     logging.getLogger().addHandler(fh)
+    logging.getLogger().addHandler(EventLogHandler())  # warnings and errors show in the dashboard's activity feed
     logging.getLogger().setLevel(level)
     logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines hold full URLs (Telegram's has the token)
     if sys.stderr is not None:  # None under pythonw.exe (startup launch, no console)

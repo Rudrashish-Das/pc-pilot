@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+<title>Bot dashboard</title>
+<style>
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --text: #16181d; --muted: #646a76; --line: #e3e5ea; --chip: #eef0f4;
+  --accent: #5865f2; --ok: #1a9a55; --warn: #b7791f; --err: #d93a3f; --run: #2f6fde;
+  --ok-bg: #e6f6ed; --warn-bg: #fdf3e1; --err-bg: #fde8e8; --run-bg: #e7effd;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115; --card: #171a21; --text: #e7e9ee; --muted: #9098a6; --line: #262a34; --chip: #222631;
+    --accent: #8891ff; --ok: #43c47f; --warn: #e3a64a; --err: #ff6b6f; --run: #6ea1ff;
+    --ok-bg: #16281f; --warn-bg: #2d2415; --err-bg: #331a1c; --run-bg: #17223a;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body { font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding-bottom: env(safe-area-inset-bottom); }
+header { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+.bar { max-width: 980px; margin: 0 auto; padding: 10px 16px 0; }
+.title { display: flex; align-items: center; gap: 10px; }
+.title h1 { font-size: 17px; margin: 0; font-weight: 650; }
+.title .sub { color: var(--muted); font-size: 13px; margin-left: auto; text-align: right; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.ok { background: var(--ok); } .dot.err { background: var(--err); } .dot.run { background: var(--run); animation: pulse 1.4s infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+nav { display: flex; gap: 4px; overflow-x: auto; padding: 8px 0 0; scrollbar-width: none; }
+nav::-webkit-scrollbar { display: none; }
+nav button { font: inherit; font-size: 14px; border: 0; background: none; color: var(--muted); padding: 8px 12px 10px;
+  border-bottom: 2px solid transparent; white-space: nowrap; cursor: pointer; }
+nav button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+nav .n { font-size: 11px; background: var(--chip); border-radius: 9px; padding: 1px 6px; margin-left: 4px; }
+main { max-width: 980px; margin: 0 auto; padding: 14px 16px 40px; }
+section { display: none; } section.on { display: block; }
+.grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; min-width: 0; }
+.card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+.card.wide { grid-column: 1 / -1; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 14px; }
+.kv > :nth-child(odd) { color: var(--muted); }
+.kv > :nth-child(even) { text-align: right; overflow-wrap: anywhere; }
+.big { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); } .small { font-size: 13px; } .mono { font-family: var(--mono); font-size: 12.5px; }
+.meter { height: 6px; background: var(--chip); border-radius: 3px; overflow: hidden; margin: 6px 0 2px; }
+.meter > i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+.meter.hot > i { background: var(--warn); } .meter.full > i { background: var(--err); }
+.row { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; }
+.badge { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 1px 8px; border-radius: 10px;
+  background: var(--chip); color: var(--muted); white-space: nowrap; }
+.badge.ok { background: var(--ok-bg); color: var(--ok); } .badge.warn { background: var(--warn-bg); color: var(--warn); }
+.badge.err { background: var(--err-bg); color: var(--err); } .badge.run { background: var(--run-bg); color: var(--run); }
+.live { border-color: color-mix(in srgb, var(--run) 45%, var(--line)); }
+.lines { margin: 10px 0 0; padding: 8px 10px; background: var(--chip); border-radius: 10px; max-height: 240px; overflow: auto; }
+.lines div { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; padding: 1px 0; }
+.task { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; }
+.empty { color: var(--muted); font-size: 14px; padding: 6px 0; }
+.list { display: flex; flex-direction: column; }
+.item { padding: 10px 0; border-top: 1px solid var(--line); min-width: 0; }
+.item:first-child { border-top: 0; padding-top: 2px; }
+.item .head { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+.item .head .t { margin-left: auto; font-variant-numeric: tabular-nums; }
+.item .body { margin-top: 3px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.item .body.clip { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.item .more { margin-top: 6px; font-size: 13.5px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere;
+  border-left: 2px solid var(--line); padding-left: 10px; display: none; }
+.item.open .more { display: block; } .item.open .body.clip { -webkit-line-clamp: unset; display: block; }
+.item[data-expand] { cursor: pointer; }
+.day { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 18px 0 6px; }
+.day:first-child { margin-top: 0; }
+.chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 10px; scrollbar-width: none; }
+.chips::-webkit-scrollbar { display: none; }
+.chips button { font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--card); color: var(--text);
+  border-radius: 16px; padding: 5px 12px; white-space: nowrap; cursor: pointer; }
+.chips button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tools { display: flex; gap: 8px; margin-bottom: 10px; }
+input[type=search] { font: inherit; flex: 1; min-width: 0; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--card); color: var(--text); }
+.btn { font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--card); color: var(--text);
+  border-radius: 10px; padding: 8px 14px; cursor: pointer; }
+.center { text-align: center; margin-top: 12px; }
+.log { font-family: var(--mono); font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.log div { padding: 1px 0; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+.log .WARNING { color: var(--warn); } .log .ERROR, .log .CRITICAL { color: var(--err); }
+.banner { border-radius: 12px; padding: 10px 14px; margin-bottom: 12px; font-size: 14px; }
+.banner.warn { background: var(--warn-bg); color: var(--warn); } .banner.err { background: var(--err-bg); color: var(--err); }
+.hide { display: none !important; }
+.totals { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; font-size: 14px; }
+.totals b { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="title"><span class="dot" id="dot"></span><h1>Bot dashboard</h1><span class="sub" id="sub">loading…</span></div>
+    <nav id="tabs">
+      <button data-tab="now" class="on">Now</button>
+      <button data-tab="activity">Activity</button>
+      <button data-tab="jobs">Claude jobs</button>
+      <button data-tab="schedule">Scheduled <span class="n" id="n-sched">0</span></button>
+      <button data-tab="log">Log</button>
+    </nav>
+  </div>
+</header>
+<main>
+  <div class="banner err hide" id="offline"></div>
+  <section id="now" class="on">
+    <div class="banner warn hide" id="power"></div>
+    <div class="grid">
+      <div class="card wide" id="busy-card"><h2>Right now</h2><div id="busy"></div></div>
+      <div class="card"><h2>Claude Code spend today</h2><div id="spend"></div></div>
+      <div class="card"><h2>Models in memory</h2><div id="models"></div></div>
+      <div class="card"><h2>Laptop</h2><div id="machine"></div></div>
+      <div class="card"><h2>Bot</h2><div id="botinfo"></div></div>
+      <div class="card"><h2>Coming up</h2><div id="next"></div></div>
+      <div class="card"><h2>Latest</h2><div id="latest" class="list"></div></div>
+    </div>
+  </section>
+  <section id="activity">
+    <div class="tools"><input type="search" id="q" placeholder="Search activity"></div>
+    <div class="chips" id="filters"></div>
+    <div class="card"><div id="feed"></div></div>
+    <div class="center"><button class="btn" id="older">Load older</button></div>
+  </section>
+  <section id="jobs">
+    <div class="totals" id="job-totals"></div>
+    <div class="card"><div id="joblist" class="list"></div></div>
+    <div class="center"><button class="btn" id="older-jobs">Load older</button></div>
+  </section>
+  <section id="schedule">
+    <div class="grid">
+      <div class="card"><h2>Reminders</h2><div id="reminders" class="list"></div></div>
+      <div class="card"><h2>Scheduled prompts</h2><div id="tasks" class="list"></div></div>
+    </div>
+  </section>
+  <section id="log">
+    <div class="chips" id="log-filters"></div>
+    <div class="card"><div class="log" id="logbox"></div></div>
+  </section>
+</main>
+<script>
+"use strict";
+// Everything from the bot is set with textContent (never innerHTML): chat text can't inject markup.
+const $ = (id) => document.getElementById(id);
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v; else if (k === "style") el.style.cssText = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v); else el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid instanceof Node ? kid : String(kid));
+  return el;
+}
+const put = (el, ...kids) => { el.replaceChildren(...kids.flat().filter((k) => k != null && k !== false)); };
+
+const S = { tab: "now", events: [], lastId: 0, state: null, filter: "all", q: "", oldestId: null, noMore: false,
+  jobs: [], jobsLoaded: 0, logLevel: "all", skew: 0, failures: 0 };
+
+// ---- formatting
+const nowS = () => Date.now() / 1000 - S.skew;
+function ago(ts) {
+  const d = nowS() - ts;
+  if (d < 45) return "just now";
+  if (d < 3600) return Math.round(d / 60) + " min ago";
+  if (d < 86400) return Math.round(d / 3600) + " h ago";
+  return Math.round(d / 86400) + " d ago";
+}
+function until(ts) {
+  const d = ts - nowS();
+  if (d <= 0) return "due now";
+  if (d < 3600) return "in " + Math.max(1, Math.round(d / 60)) + " min";
+  if (d < 86400) return "in " + (d / 3600).toFixed(d < 36000 ? 1 : 0) + " h";
+  return "in " + Math.round(d / 86400) + " d";
+}
+function dur(s) {
+  s = Math.round(s || 0);
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m " + (s % 60) + "s";
+  if (s < 86400) return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m";
+  return Math.floor(s / 86400) + "d " + Math.floor((s % 86400) / 3600) + "h";
+}
+const clock = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const when = (ts) => {
+  const d = new Date(ts * 1000), t = new Date();
+  return d.toDateString() === t.toDateString() ? clock(ts)
+    : d.toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+};
+const iso = (s) => (s ? Date.parse(s) / 1000 : null);
+function dayLabel(ts) {
+  const d = new Date(ts * 1000), t = new Date(), y = new Date(Date.now() - 86400000);
+  if (d.toDateString() === t.toDateString()) return "Today";
+  if (d.toDateString() === y.toDateString()) return "Yesterday";
+  return d.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" });
+}
+const usd = (x) => (x == null ? "—" : "$" + (x < 0.01 && x > 0 ? x.toFixed(4) : x.toFixed(2)));
+const gb = (x) => (x == null ? "—" : x.toFixed(1) + " GB");
+function meter(frac, label) {
+  const f = Math.max(0, Math.min(1, frac || 0));
+  return h("div", {}, h("div", { class: "meter" + (f >= 0.95 ? " full" : f >= 0.8 ? " hot" : "") }, h("i", { style: `width:${(f * 100).toFixed(1)}%` })),
+    label ? h("div", { class: "small muted" }, label) : null);
+}
+const kv = (pairs) => h("div", { class: "kv" }, pairs.filter(Boolean).flatMap(([k, v]) => [h("span", {}, k), h("span", {}, v)]));
+
+// ---- event kinds
+const KINDS = {
+  local: { label: "Local", icon: "💻" }, claude: { label: "Claude Code", icon: "🤖" }, reminder: { label: "Reminder", icon: "⏰" },
+  task: { label: "Task", icon: "🗓️" }, power: { label: "Power", icon: "🔌" }, model: { label: "Model", icon: "🧠" },
+  voice: { label: "Voice", icon: "🎙️" }, bot: { label: "Bot", icon: "🟢" }, warning: { label: "Warning", icon: "⚠️" },
+  error: { label: "Error", icon: "⛔" },
+};
+const FILTERS = [
+  ["all", "All", () => true],
+  ["chats", "Chats", (e) => e.kind === "local" || e.kind === "claude"],
+  ["claude", "Claude Code", (e) => e.kind === "claude"],
+  ["local", "Local model", (e) => e.kind === "local"],
+  ["reminders", "Reminders & tasks", (e) => e.kind === "reminder" || e.kind === "task"],
+  ["system", "System", (e) => ["bot", "model", "power", "voice"].includes(e.kind)],
+  ["problems", "Problems", (e) => e.level === "error" || e.level === "warning"],
+];
+
+function statusBadge(e) {
+  const s = e.status;
+  if (e.level === "error") return h("span", { class: "badge err" }, s || "error");
+  if (e.level === "warning") return h("span", { class: "badge warn" }, "warning");
+  if (!s) return null;
+  const cls = { success: "ok", fired: "ok", ran: "ok", set: "run", scheduled: "run", late: "warn", stopped: "warn", cancelled: "" }[s];
+  return h("span", { class: "badge " + (cls || "") }, s);
+}
+
+function eventItem(e) {
+  const k = KINDS[e.kind] || { label: e.kind, icon: "•" };
+  const bits = [];
+  if (e.model) bits.push(e.model);
+  if (e.seconds != null) bits.push(dur(e.seconds));
+  if (e.cost != null) bits.push(usd(e.cost));
+  if (e.turns != null) bits.push(e.turns + " turns");
+  if (e.tools) bits.push("used " + [].concat(e.tools).join(", "));
+  if (e.due && e.status !== "fired") bits.push("due " + when(iso(e.due)));
+  if (e.cron) bits.push("cron " + e.cron);
+  if (e.scheduled) bits.push("scheduled run");
+  if (e.source) bits.push(e.source);
+  const more = [];
+  if (e.reply) more.push(h("div", {}, "↳ " + e.reply));
+  if (e.error) more.push(h("div", { style: "color:var(--err)" }, e.error));
+  if (e.notices) more.push(h("div", {}, [].concat(e.notices).join("\n")));
+  if (e.job) more.push(h("div", { class: "mono" }, "job " + e.job + (e.backend ? " · " + e.backend : "") + (e.perm ? " · " + e.perm : "") + (e.context ? " · " + e.context + " ctx tokens" : "")));
+  const expandable = more.length > 0 || (e.text || "").length > 180;
+  const el = h("div", { class: "item", "data-expand": expandable ? "1" : null },
+    h("div", { class: "head" }, h("span", {}, k.icon + " " + k.label), statusBadge(e),
+      e.who ? h("span", {}, e.who) : null, e.where ? h("span", {}, "· " + e.where) : null,
+      h("span", { class: "t", title: new Date(e.ts * 1000).toLocaleString() }, clock(e.ts))),
+    h("div", { class: "body" + (expandable ? " clip" : "") }, e.text || ""),
+    bits.length ? h("div", { class: "small muted", style: "margin-top:3px" }, bits.join(" · ")) : null,
+    more.length ? h("div", { class: "more" }, more) : null);
+  if (expandable) el.addEventListener("click", (ev) => { if (!getSelection().toString()) el.classList.toggle("open"); });
+  return el;
+}
+
+// ---- fetching
+async function getJSON(url) {
+  const r = await fetch(url, { credentials: "same-origin", cache: "no-store" });
+  if (r.status === 401) { location.href = "/"; throw new Error("signed out"); }
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+
+function mergeEvents(list) {
+  const seen = new Set(S.events.map((e) => e.id));
+  for (const e of list) if (!seen.has(e.id)) S.events.push(e);
+  S.events.sort((a, b) => b.id - a.id);
+  if (S.events.length) {
+    S.lastId = Math.max(S.lastId, S.events[0].id);
+    S.oldestId = S.events[S.events.length - 1].id;
+  }
+}
+
+async function poll() {
+  try {
+    const st = await getJSON("/api/state?since=" + S.lastId);
+    S.skew = Date.now() / 1000 - st.now;
+    S.state = st;
+    mergeEvents(st.events || []);
+    S.failures = 0;
+    $("offline").classList.add("hide");
+    render();
+  } catch (err) {
+    if (++S.failures >= 2) {
+      $("offline").textContent = "Can't reach the bot (" + err.message + "). It may be stopped, or the laptop is asleep. Retrying…";
+      $("offline").classList.remove("hide");
+      $("dot").className = "dot err";
+    }
+  }
+}
+
+// ---- rendering
+function render() {
+  const st = S.state;
+  if (!st) return;
+  const b = st.bot, busy = st.busy;
+  const working = busy.claude || busy.inflight.length || busy.local_locked;
+  const fe = b.frontends || [];
+  $("dot").className = "dot " + (working ? "run" : fe.length && fe.every((f) => f.ok) ? "ok" : "err");
+  $("sub").textContent = (working ? "working" : "idle") + " · up " + dur(st.now - b.started);
+  $("n-sched").textContent = st.reminders.length + st.tasks.length;
+  if (S.tab === "now") renderNow();
+  if (S.tab === "activity") renderFeed();
+  if (S.tab === "schedule") renderSchedule();
+}
+
+function renderNow() {
+  const st = S.state, busy = st.busy;
+  // power
+  const p = busy.power;
+  $("power").classList.toggle("hide", !p);
+  if (p) $("power").textContent = `🔌 ${p.action} requested ${ago(p.at)}${p.who ? " by " + p.who : ""}. The bot posts in the chat when it's back.`;
+  // right now
+  const kids = [];
+  const j = busy.claude;
+  $("busy-card").classList.toggle("live", !!(j || busy.inflight.length));
+  if (j) {
+    kids.push(h("div", {},
+      h("div", { class: "row" }, h("span", {}, h("span", { class: "badge run" }, j.stopping ? "stopping" : j.status), " 🤖 Claude Code · ", j.model),
+        h("span", { class: "muted small" }, dur(j.seconds))),
+      h("div", { class: "small muted", style: "margin-top:4px" }, [j.who, j.where, j.perm, j.workspace, j.scheduled ? "scheduled" : null, j.context ? j.context + " ctx tokens" : null].filter(Boolean).join(" · ")),
+      h("div", { class: "task" }, j.task),
+      j.lines.length ? h("div", { class: "lines" }, j.lines.map((l) => h("div", {}, l))) : null));
+  }
+  for (const a of busy.inflight) {
+    const k = KINDS[a.kind] || { icon: "•", label: a.kind };
+    kids.push(h("div", { style: kids.length ? "margin-top:14px" : "" },
+      h("div", { class: "row" }, h("span", {}, h("span", { class: "badge run" }, "running"), " ", k.icon, " ", k.label, a.model ? " · " + a.model : ""),
+        h("span", { class: "muted small" }, dur(st.now - a.started))),
+      h("div", { class: "small muted", style: "margin-top:4px" }, [a.who, a.where].filter(Boolean).join(" · ")),
+      h("div", { class: "task" }, a.text)));
+  }
+  if (busy.claude_waiting) kids.push(h("div", { class: "small muted", style: "margin-top:10px" }, `${busy.claude_waiting} Claude Code job(s) waiting in line`));
+  if (!kids.length) kids.push(h("div", { class: "empty" }, busy.local_locked ? "The local model is busy." : "Idle. Nothing is running."));
+  put($("busy"), kids);
+  // spend
+  const sp = st.spend;
+  put($("spend"), h("div", { class: "big" }, usd(sp.today)),
+    sp.daily_budget > 0 ? meter(sp.today / sp.daily_budget, `of ${usd(sp.daily_budget)} daily cap · ${sp.jobs_today} job(s) today`)
+      : h("div", { class: "small muted" }, `${sp.jobs_today} job(s) today · no daily cap`),
+    h("div", { class: "small muted", style: "margin-top:6px" }, `API-equivalent cost on the Anthropic backend. Per-job cap ${usd(sp.job_budget)}.`));
+  // models
+  const ms = st.models || [];
+  put($("models"),
+    ms.length ? h("div", { class: "list" }, ms.map((m) => h("div", { class: "item" },
+      h("div", { class: "row" }, h("b", {}, m.name), h("span", { class: "small muted" }, m.until ? "until " + clock(iso(m.until)) : "")),
+      h("div", { class: "small muted" }, `${(m.size_mb / 1024).toFixed(1)} GB · ${m.size_mb ? Math.round((m.vram_mb / m.size_mb) * 100) : 0}% on GPU` + (m.context ? ` · ${Math.round(m.context / 1024)}k ctx` : "")))))
+      : h("div", { class: "empty" }, st.ollama_up === false ? "Ollama isn't reachable." : "None loaded (they load on the next message)."),
+    busy.whisper_loaded ? h("div", { class: "small muted", style: "margin-top:8px" }, "🎙️ Whisper (voice notes) is loaded") : null);
+  // machine
+  const mc = st.machine || {};
+  const rows = [];
+  if (mc.ram) rows.push(h("div", {}, h("div", { class: "row small" }, h("span", {}, "Memory"), h("span", {}, `${gb(mc.ram.used_gb)} / ${gb(mc.ram.total_gb)}`)), meter(mc.ram.used_gb / mc.ram.total_gb)));
+  for (const g of mc.gpu || []) {
+    rows.push(h("div", { style: "margin-top:8px" }, h("div", { class: "row small" }, h("span", {}, "GPU memory"), h("span", {}, `${(g.mem_used_mb / 1024).toFixed(1)} / ${(g.mem_total_mb / 1024).toFixed(1)} GB`)),
+      meter(g.mem_used_mb / g.mem_total_mb, `${g.name} · ${g.util ?? "—"}% busy` + (g.temp_c != null ? ` · ${g.temp_c}°C` : ""))));
+  }
+  const facts = [];
+  if (mc.battery) facts.push(["Battery", (mc.battery.percent != null ? mc.battery.percent + "%" : "—") + (mc.battery.plugged_in ? " · plugged in" : " · on battery")]);
+  if (mc.disk) facts.push(["Disk free", `${mc.disk.free_gb} of ${mc.disk.total_gb} GB`]);
+  if (mc.host) facts.push(["Name", mc.host]);
+  put($("machine"), rows, facts.length ? h("div", { style: rows.length ? "margin-top:10px" : "" }, kv(facts)) : null);
+  // bot
+  const b = st.bot;
+  put($("botinfo"), kv([
+    ...b.frontends.map((f) => [f.name, h("span", {}, h("span", { class: "badge " + (f.ok ? "ok" : "err") }, f.ok ? "online" : "offline"), " ", f.detail)]),
+    ["Up since", when(b.started)],
+    ["Default engine", b.default_engine + " · " + b.local_model],
+    ["Claude Code", b.cc.enabled ? `${b.cc.backend} · ${b.cc.model}` + (b.claude ? ` · CLI ${b.claude}` : "") : "disabled"],
+    ["Storage", b.storage],
+    ["Version", b.version],
+  ]));
+  // coming up
+  const up = [
+    ...st.reminders.map((r) => ({ ts: iso(r.when), icon: "⏰", text: r.text, sub: r.who })),
+    ...st.tasks.filter((t) => t.next).map((t) => ({ ts: iso(t.next), icon: t.engine === "claude" ? "🤖" : "💻", text: t.description, sub: t.cron ? "cron " + t.cron : "once" })),
+  ].sort((a, b) => a.ts - b.ts).slice(0, 4);
+  put($("next"), up.length ? h("div", { class: "list" }, up.map((u) => h("div", { class: "item" },
+    h("div", { class: "row small" }, h("span", {}, u.icon + " " + when(u.ts)), h("span", { class: "muted" }, until(u.ts))),
+    h("div", { class: "body clip" }, u.text)))) : h("div", { class: "empty" }, "No reminders or scheduled prompts."));
+  // latest
+  put($("latest"), S.events.slice(0, 5).map(eventItem));
+  if (!S.events.length) put($("latest"), h("div", { class: "empty" }, "Nothing yet."));
+}
+
+function renderFeed() {
+  const f = FILTERS.find((x) => x[0] === S.filter)[2];
+  const q = S.q.trim().toLowerCase();
+  const list = S.events.filter(f).filter((e) => !q || [e.text, e.reply, e.who, e.where, e.model, e.error].some((x) => x && String(x).toLowerCase().includes(q)));
+  const out = [];
+  let day = null, group = null;
+  for (const e of list) {
+    const d = dayLabel(e.ts);
+    if (d !== day) { day = d; out.push(h("div", { class: "day" }, d)); group = h("div", { class: "list" }); out.push(group); }
+    group.append(eventItem(e));
+  }
+  // keep expanded items expanded across refreshes
+  const open = new Set([...$("feed").querySelectorAll(".item.open")].map((el) => el.dataset.id));
+  put($("feed"), out.length ? out : h("div", { class: "empty" }, q || S.filter !== "all" ? "Nothing matches." : "No activity yet."));
+  let i = 0;
+  for (const el of $("feed").querySelectorAll(".item")) { el.dataset.id = list[i].id; if (open.has(String(list[i].id))) el.classList.add("open"); i++; }
+  $("older").classList.toggle("hide", S.noMore);
+}
+
+function renderSchedule() {
+  const st = S.state;
+  put($("reminders"), st.reminders.length ? st.reminders.map((r) => h("div", { class: "item" },
+    h("div", { class: "head" }, h("span", {}, "⏰ " + when(iso(r.when))), h("span", { class: "badge run" }, until(iso(r.when))), h("span", { class: "t" }, r.id)),
+    h("div", { class: "body" }, r.text),
+    h("div", { class: "small muted" }, [r.who, r.where].filter(Boolean).join(" · ")))) : h("div", { class: "empty" }, "No reminders."));
+  put($("tasks"), st.tasks.length ? st.tasks.map((t) => h("div", { class: "item", "data-expand": "1", onclick: (ev) => ev.currentTarget.classList.toggle("open") },
+    h("div", { class: "head" }, h("span", {}, (t.engine === "claude" ? "🤖 " : "💻 ") + (t.cron ? "cron " + t.cron : "once")),
+      t.next ? h("span", { class: "badge run" }, "next " + until(iso(t.next))) : null, h("span", { class: "t" }, t.id)),
+    h("div", { class: "body" }, t.description),
+    h("div", { class: "small muted" }, [t.next ? when(iso(t.next)) : null, t.who, t.where].filter(Boolean).join(" · ")),
+    h("div", { class: "more" }, t.prompt))) : h("div", { class: "empty" }, "No scheduled prompts."));
+}
+
+async function loadOlder() {
+  if (S.noMore) return;
+  $("older").disabled = true;
+  try {
+    const r = await getJSON("/api/events?limit=150" + (S.oldestId ? "&before=" + S.oldestId : ""));
+    if (r.events.length < 150) S.noMore = true;
+    mergeEvents(r.events);
+    renderFeed();
+  } finally { $("older").disabled = false; }
+}
+
+async function loadJobs(more) {
+  const before = more && S.jobs.length ? "&before=" + encodeURIComponent(S.jobs[S.jobs.length - 1].finished_at) : "";
+  const r = await getJSON("/api/jobs?limit=50" + before);
+  S.jobs = more ? S.jobs.concat(r.jobs) : r.jobs;
+  $("older-jobs").classList.toggle("hide", r.jobs.length < 50);
+  const cost = S.jobs.reduce((a, j) => a + (j.cost_usd || 0), 0);
+  const ok = S.jobs.filter((j) => j.outcome === "success").length;
+  put($("job-totals"), h("span", {}, h("b", {}, S.jobs.length), " jobs shown"), h("span", {}, h("b", {}, usd(cost)), " total"),
+    h("span", {}, h("b", {}, ok), " succeeded"), h("span", {}, h("b", {}, S.jobs.length - ok), " failed or stopped"));
+  put($("joblist"), S.jobs.length ? S.jobs.map((j) => {
+    const cls = { success: "ok", error: "err", stopped: "warn" }[j.outcome] || "";
+    const el = h("div", { class: "item", "data-expand": "1" },
+      h("div", { class: "head" }, h("span", { class: "badge " + cls }, j.outcome), h("span", {}, j.model),
+        j.who ? h("span", {}, j.who) : null, j.where ? h("span", {}, "· " + j.where) : null,
+        h("span", { class: "t" }, when(iso(j.finished_at)))),
+      h("div", { class: "body clip" }, j.prompt || ""),
+      h("div", { class: "small muted", style: "margin-top:3px" }, [usd(j.cost_usd), j.seconds != null ? dur(j.seconds) : null, j.turns != null ? j.turns + " turns" : null, j.perm, j.backend].filter(Boolean).join(" · ")),
+      h("div", { class: "more mono" }, `job ${j.job_id} · session ${j.session_id || "—"} · session total ${usd(j.session_cost_usd)} · ${j.context_tokens || "?"} ctx tokens`));
+    el.addEventListener("click", () => el.classList.toggle("open"));
+    return el;
+  }) : h("div", { class: "empty" }, "No Claude Code jobs recorded yet."));
+}
+
+const LOG_LEVELS = [["all", "All"], ["INFO", "Info+"], ["WARNING", "Warnings+"], ["ERROR", "Errors"]];
+async function loadLog() {
+  const r = await getJSON("/api/log?lines=400");
+  const rank = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4 };
+  const min = S.logLevel === "all" ? -1 : rank[S.logLevel];
+  let level = "INFO";
+  const rows = [];
+  for (const line of r.lines) {
+    const m = line.match(/^\d{4}-\d\d-\d\d [\d:,]+ (DEBUG|INFO|WARNING|ERROR|CRITICAL)\b/);
+    if (m) level = m[1];  // continuation lines (tracebacks) keep the level of their record
+    if ((rank[level] ?? 1) >= min) rows.push(h("div", { class: level }, line));
+  }
+  const box = $("logbox");
+  const atBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 40;
+  put(box, rows.length ? rows : h("div", { class: "empty" }, r.lines.length ? "Nothing at this level." : "The log is empty."));
+  if (atBottom) window.scrollTo(0, document.body.scrollHeight);
+}
+
+// ---- wiring
+function chips(el, items, current, onpick) {
+  put(el, items.map(([key, label]) => h("button", { class: key === current ? "on" : null, onclick: () => onpick(key) }, label)));
+}
+function setFilter(k) { S.filter = k; chips($("filters"), FILTERS, k, setFilter); renderFeed(); }
+function setLogLevel(k) { S.logLevel = k; chips($("log-filters"), LOG_LEVELS, k, setLogLevel); loadLog(); }
+function show(tab) {
+  S.tab = tab;
+  for (const b of $("tabs").children) b.classList.toggle("on", b.dataset.tab === tab);
+  for (const s of document.querySelectorAll("main > section")) s.classList.toggle("on", s.id === tab);
+  try { localStorage.setItem("tab", tab); } catch (e) {}
+  if (tab === "jobs") loadJobs(false).catch(() => {});
+  if (tab === "log") loadLog().catch(() => {});
+  if (tab === "activity" && S.events.length < 60 && !S.noMore) loadOlder().catch(() => {});
+  render();
+}
+$("tabs").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) show(b.dataset.tab); });
+$("q").addEventListener("input", (e) => { S.q = e.target.value; renderFeed(); });
+$("older").addEventListener("click", () => loadOlder().catch(() => {}));
+$("older-jobs").addEventListener("click", () => loadJobs(true).catch(() => {}));
+chips($("filters"), FILTERS, S.filter, setFilter);
+chips($("log-filters"), LOG_LEVELS, S.logLevel, setLogLevel);
+
+let timer = null, slow = 0;
+async function tick() {
+  if (document.hidden) return;
+  await poll();
+  if (++slow % 10 === 0) {  // every ~30 s
+    if (S.tab === "jobs") loadJobs(false).catch(() => {});
+  }
+  if (S.tab === "log" && slow % 2 === 0) loadLog().catch(() => {});
+}
+function start() { clearInterval(timer); timer = setInterval(tick, 3000); tick(); }
+document.addEventListener("visibilitychange", () => { if (!document.hidden) start(); });
+let saved = "now";
+try { saved = localStorage.getItem("tab") || "now"; } catch (e) {}
+show(["now", "activity", "jobs", "schedule", "log"].includes(saved) ? saved : "now");
+start();
+</script>
+</body>
+</html>

@@ -1,7 +1,8 @@
 """Log files with a hard cap on disk use.
 
-bot.log (and data/jobs.jsonl, the job history when there's no Postgres) roll over at LOG_FILE_MB into timestamped
-archives such as bot-20260930-151200.log.gz (gzip unless LOG_COMPRESS=false). After every rollover, and at startup,
+bot.log (and data/jobs.jsonl and data/events.jsonl, the job and activity history when there's no Postgres) roll over
+at LOG_FILE_MB into timestamped archives such as bot-20260930-151200.log.gz (gzip unless LOG_COMPRESS=false). After
+every rollover, and at startup,
 the oldest archives are deleted until everything together fits in LOG_MAX_TOTAL_MB, and archives older than
 LOG_KEEP_DAYS are dropped (0 = no age limit). The live files are never deleted.
 """
@@ -16,8 +17,8 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 MB = 1024 * 1024
-PATTERNS = ("bot*.log*", "jobs*.jsonl*")  # what counts toward the cap, in the data folder
-LIVE = {"bot.log", "jobs.jsonl"}
+PATTERNS = ("bot*.log*", "jobs*.jsonl*", "events*.jsonl*")  # what counts toward the cap, in the data folder
+LIVE = {"bot.log", "jobs.jsonl", "events.jsonl"}
 
 total_bytes = 2048 * MB
 file_bytes = 50 * MB

@@ -40,6 +40,7 @@ One bot process, two front ends. Both share one backend: engines, Claude Code se
   - a per-message cost breakdown.
 - **Frees the GPU:** idle models are unloaded (`/unload` does it right away).
 - **Storage:** JSON files in `data/` with no setup, or a Postgres database if you set `DATABASE_URL`. Either way it holds settings, tasks, reminders, spend, the local model's chat memory and a history of every Claude Code job with its cost.
+- **Web dashboard** for your phone: what the bot is doing right now (live Claude Code progress, local replies, voice notes), a searchable history of everything it did, Claude Code jobs with their cost, today's spend against the cap, upcoming reminders and scheduled prompts, models in GPU memory, the laptop's RAM/GPU/battery, and the log. Served by the bot itself on your local network, behind an access key. `/dashboard` gives owners the link.
 - **Laptop power from chat** (`/power`, owners only): lock, sleep, hibernate, restart or shut down, with a confirmation step. The bot posts in the chat when it's back up.
 
 ## Security model
@@ -237,6 +238,7 @@ Your settings, tasks, reminders and logs are in `data/` (or your Postgres databa
 | List and cancel them | `/tasks` | `/tasks` |
 | Free the GPU | `/unload` | `/unload` |
 | Lock / sleep / hibernate / restart / shut down the laptop (owners) | `/power` | `/power` |
+| Web dashboard link (owners) | `/dashboard` | `/dashboard` (private chat) |
 
 Voice notes, images and files work on both. See [docs/SETUP.md](docs/SETUP.md) for how each feature behaves and what it costs.
 
@@ -250,6 +252,7 @@ Voice notes, images and files work on both. See [docs/SETUP.md](docs/SETUP.md) f
 | Telegram answers nothing | Your id must be in `TELEGRAM_ALLOWED_USER_IDS` (send `/start` to get it), then restart. |
 | The Claude Code engine is missing | You're not an owner: set `OWNER_IDS` (with no owners at all, Claude Code is off). Or `claude` isn't found: set `CLAUDE_BIN`. |
 | The local model is slow | Run `ollama ps`. If it isn't 100% GPU, try the [Ollama tuning](docs/SETUP.md#ollama-tuning-optional) settings, or use a smaller model or context. |
+| The dashboard doesn't load on the phone | Same Wi-Fi as the laptop? Run `.\scripts\bot_control.ps1 firewall` once as administrator, and set the Wi-Fi to Private in Windows settings. The laptop's address can change: get a fresh link with `/dashboard`. |
 | "Another copy of the bot is already running" | Run `.\scripts\bot_control.ps1 stop` first. |
 | Anything else | Check `data\bot.log`, or run `.\scripts\bot_control.ps1 log`. |
 
@@ -261,13 +264,15 @@ Voice notes, images and files work on both. See [docs/SETUP.md](docs/SETUP.md) f
 llmbot/
   core.py         backend: engines, Claude Code runner, tools, reminders, scheduler, settings + the Discord front end
   telegram.py     Telegram front end (Bot API over httpx): renders Discord-style output, maps buttons/menus
+  dashboard.py    web dashboard (aiohttp, in the bot process); dashboard.html is the page
+  store.py        storage: JSON files in data/ or Postgres
   __main__.py     python -m llmbot   (python -m llmbot --mcp-web = the web-tools MCP server Claude Code starts)
 tests/
   test_suites.py  pytest entry point: runs each suite in its own process
   suites/         the suites (live_* and the live parts of others run only with LLMBOT_LIVE=1)
   fixtures/       sample Claude Code stream-json output, a short voice note
 scripts/
-  bot_control.ps1 install / start / stop / restart / status / log
+  bot_control.ps1 install / start / stop / restart / status / log / dashboard / firewall
 docs/SETUP.md     detailed guide: every feature, costs, security
 .env.example      every setting, documented
 data/             runtime state, created on first run (not in git)

@@ -7,8 +7,10 @@
     .\scripts\bot_control.ps1 restart   Stop, then start (after pulling updates)
     .\scripts\bot_control.ps1 status    Show whether it's running / in startup
     .\scripts\bot_control.ps1 log       Tail data\bot.log
+    .\scripts\bot_control.ps1 dashboard Print the web dashboard's link (with its access key) and open it here
+    .\scripts\bot_control.ps1 firewall  Let phones on your Wi-Fi reach the dashboard (run as administrator, once)
 #>
-param([Parameter(Position = 0)][ValidateSet("install", "remove", "start", "stop", "restart", "status", "log")][string]$Action = "status")
+param([Parameter(Position = 0)][ValidateSet("install", "remove", "start", "stop", "restart", "status", "log", "dashboard", "firewall")][string]$Action = "status")
 
 $Dir      = Split-Path $PSScriptRoot -Parent  # the repo root
 $Pythonw  = Join-Path $Dir ".venv\Scripts\pythonw.exe"
@@ -24,6 +26,20 @@ function Get-BotProcess {
 function Stop-Bot {
     $p = Get-BotProcess
     if ($p) { $p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; "Stopped." } else { "Not running." }
+}
+
+function Get-EnvValue($name) {
+    $envFile = Join-Path $Dir ".env"
+    if (-not (Test-Path $envFile)) { return "" }
+    $line = Get-Content $envFile | Where-Object { $_ -match "^\s*$name\s*=" } | Select-Object -Last 1
+    if ($line) { return ($line -split "=", 2)[1].Trim().Trim('"').Trim("'") }
+    return ""
+}
+
+function Get-DashboardPort {
+    $p = Get-EnvValue "DASHBOARD_PORT"
+    if ($p -match "^\d+$") { return [int]$p }
+    return 8765
 }
 
 function Start-Bot {
@@ -58,4 +74,30 @@ switch ($Action) {
         "In Startup apps: " + $(if (Test-Path $Shortcut) { "yes (enable/disable in Task Manager)" } else { "no" })
     }
     "log" { Get-Content $LogFile -Tail 40 -Wait }
+    "dashboard" {
+        $port = Get-DashboardPort
+        if ($port -eq 0) { "The dashboard is off (DASHBOARD_PORT=0 in .env)."; return }
+        $key = Get-EnvValue "DASHBOARD_TOKEN"
+        $keyFile = Join-Path $Dir "data\dashboard.key"
+        if (-not $key -and (Test-Path $keyFile)) { $key = (Get-Content $keyFile -Raw).Trim() }
+        if (-not $key) { "No access key yet: start the bot once, then run this again."; return }
+        $ips = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.IPAddress -notmatch "^(127\.|169\.254\.)" -and $_.PrefixOrigin -ne "WellKnown" } |
+            Select-Object -ExpandProperty IPAddress
+        "On this PC:     http://127.0.0.1:$port/?key=$key"
+        foreach ($ip in $ips) { "On your Wi-Fi:  http://${ip}:$port/?key=$key" }
+        "The link holds the access key; don't share it. Phones can't connect? Run: .\scripts\bot_control.ps1 firewall (as administrator)"
+        Start-Process "http://127.0.0.1:$port/?key=$key"
+    }
+    "firewall" {
+        $port = Get-DashboardPort
+        $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator)
+        if (-not $admin) { Write-Error "Run PowerShell as administrator for this one."; exit 1 }
+        Get-NetFirewallRule -DisplayName "LLM bot dashboard" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+        # Private networks only (home Wi-Fi). On networks Windows calls Public (cafes, hotels), it stays blocked.
+        New-NetFirewallRule -DisplayName "LLM bot dashboard" -Direction Inbound -Protocol TCP -LocalPort $port `
+            -Profile Private -Action Allow | Out-Null
+        "Allowed inbound TCP $port on Private networks. If your Wi-Fi is set to Public: Settings > Network & internet > Wi-Fi > (your network) > Private."
+    }
 }

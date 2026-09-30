@@ -55,6 +55,7 @@ COMMANDS = [
     ("log", "Full log of the last Claude Code reply"),
     ("unload", "Free GPU memory now"),
     ("power", "Lock, sleep, restart or shut down the laptop"),
+    ("dashboard", "Link to the web dashboard (owners, private chat)"),
     ("help", "How to use this bot"),
 ]
 
@@ -638,6 +639,7 @@ class Telegram:
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 300)
         log.info("Telegram: logged in as @%s", self.username)
+        self.core.note_event("bot", f"Telegram connected as @{self.username}")
         offset = None
         while not self._closed:
             try:
@@ -898,6 +900,16 @@ class Telegram:
                 await out(content="Power controls only work when the bot runs on Windows.")
                 return
             await chan.send(embed=core.power_embed(), view=core.PowerView(cid))
+        elif cmd == "dashboard":
+            if not core.is_owner(uid):
+                await out(content="⛔ Only owners can open the dashboard.")
+                return
+            if not private:  # the link holds the access key
+                await out(content="Send /dashboard to me in a private chat: the link holds the access key.")
+                return
+            from llmbot import dashboard
+
+            await out(content=dashboard.link_text(angle=False))
         elif cmd == "cancel":
             await out(content="Nothing to cancel.")
         else:
@@ -921,6 +933,7 @@ class Telegram:
             "Scheduled prompts: just ask (\"at 8am tell me the latest news on …\"); /schedule <cron> | <prompt>; /tasks lists and cancels",
             "/reset: clear the local model's memory · /unload: free GPU memory now",
             "/power (owners): lock, sleep, hibernate, restart or shut down the laptop; I post here when I'm back",
+            "/dashboard (owners): web page with what I'm doing now and what I've done, for your phone on the same Wi-Fi",
             "📎 Photos and files: attach them to your message (Claude Code sees images and PDFs).",
             *(["🎙️ Voice notes: transcribed on the laptop and answered like a typed message."] if core.VOICE_ENABLED else []),
             "",
