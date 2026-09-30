@@ -151,6 +151,8 @@ Owners only, on Windows. `/power` offers five actions:
   - `jobs.jsonl` (one line per Claude Code job: model, cost, turns, context, outcome);
   - `mcp_web.json` and `bot.log`.
 
+  **Logs** roll over at `LOG_FILE_MB` (50) into dated, gzipped archives such as `bot-20260930-151200123.log.gz`. The oldest archives are deleted so that all log files together never use more than `LOG_MAX_TOTAL_MB`, 2 GB by default. That total includes `jobs.jsonl` when you're not on Postgres. `LOG_KEEP_DAYS` adds an age limit, `LOG_COMPRESS=false` keeps archives as plain text, and `LOG_LEVEL=DEBUG` gives more detail. The live `bot.log` is never deleted. To read an archive, use `gzip -dc` or 7-Zip.
+
   They survive restarts and updates. Copy the folder along if you move the bot to another machine. `LLMBOT_DATA_DIR` puts it somewhere else.
 - **Postgres instead of files (optional):** set `DATABASE_URL=postgresql://user:password@localhost:5432/llmbot` in `.env`. Create the database first (`createdb llmbot`, or in pgAdmin). On the next start:
   - the bot creates two tables: `llmbot_state`, with one jsonb row per kind (settings, tasks, reminders, usage, history, the pending power action), and `llmbot_jobs`, with one row per Claude Code job;

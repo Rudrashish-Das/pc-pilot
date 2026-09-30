@@ -22,6 +22,8 @@ Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `
 
 - Optional Postgres storage (`DATABASE_URL`): settings, tasks, reminders, usage, local chat memory and the power note go in `llmbot_state`, and every Claude Code job is a row in `llmbot_jobs`. Existing `data/` files are imported once. Without `DATABASE_URL`, the same data stays in JSON files in `data/`. That now includes `history.json`, so the local model's memory survives restarts, and `jobs.jsonl`.
 
+- Log rotation with a total cap: `bot.log` rolls over into dated gzip archives, and the oldest are deleted to keep all logs under `LOG_MAX_TOTAL_MB` (default 2048). This replaces the old 2 MB × 3 backups. Also new: `LOG_FILE_MB`, `LOG_COMPRESS`, `LOG_KEEP_DAYS` and `LOG_LEVEL`. `jobs.jsonl` follows the same limits.
+
 ## 0.24.0
 - Telegram: the stats line is a tap-to-reveal spoiler, because Telegram has no small grey text. It can be turned off per chat in `/panel` → ⚙️ Settings. Warnings (compact hints, blocked tools, unbacked claims) stay visible either way.
 - Tests: Telegram-only and Discord-only setups.

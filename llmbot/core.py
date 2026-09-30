@@ -39,6 +39,7 @@ from apscheduler.triggers.date import DateTrigger
 from discord import app_commands
 from dotenv import load_dotenv
 
+from llmbot import logs as logs_mod
 from llmbot import store as store_mod
 
 # =============================================================================
@@ -337,6 +338,23 @@ def _read_json(path: Path, default: Any) -> Any:
 # Bookkeeping lives in memory and is saved through STORE after each change: JSON files in data/ by default, or
 # Postgres when DATABASE_URL is set (llmbot/store.py). main() opens the configured store and loads everything.
 DATABASE_URL = _env("DATABASE_URL")
+
+
+def _num(name: str, default: float) -> float:
+    try:
+        return float(_env(name) or default)
+    except ValueError:
+        log.warning("%s must be a number; using %g", name, default)
+        return default
+
+
+# Log files (bot.log, and jobs.jsonl without Postgres): see llmbot/logs.py
+LOG_MAX_TOTAL_MB = _num("LOG_MAX_TOTAL_MB", 2048)  # everything together, archives included
+LOG_FILE_MB = _num("LOG_FILE_MB", 50)  # roll over into an archive at this size
+LOG_COMPRESS = _env("LOG_COMPRESS", "true").lower() not in ("0", "false", "no", "off")
+LOG_KEEP_DAYS = _num("LOG_KEEP_DAYS", 0)  # 0 = only the size cap
+LOG_LEVEL = _env("LOG_LEVEL", "INFO").upper()
+logs_mod.configure(LOG_MAX_TOTAL_MB, LOG_FILE_MB, LOG_COMPRESS, LOG_KEEP_DAYS)
 HISTORY_FILE = DATA_DIR / "history.json"
 STORE: Any = store_mod.FileStore(DATA_DIR)
 
@@ -3820,15 +3838,21 @@ _instance_sock: socket.socket | None = None
 
 
 def _setup_logging() -> None:
-    from logging.handlers import RotatingFileHandler
-
-    fh = RotatingFileHandler(DATA_DIR / "bot.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+    """data/bot.log, rolled over into gzipped archives; all log files together stay under LOG_MAX_TOTAL_MB."""
+    level = getattr(logging, LOG_LEVEL, logging.INFO)
+    removed = logs_mod.enforce(DATA_DIR)  # the limits may have been lowered since the last run
+    fh = logs_mod.CappedRotatingFileHandler(DATA_DIR / "bot.log")
     fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s"))
     logging.getLogger().addHandler(fh)
-    logging.getLogger().setLevel(logging.INFO)
+    logging.getLogger().setLevel(level)
     logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines hold full URLs (Telegram's has the token)
     if sys.stderr is not None:  # None under pythonw.exe (startup launch, no console)
-        discord.utils.setup_logging(level=logging.INFO)
+        discord.utils.setup_logging(level=level)
+    log.info("Logs: up to %g MB in %s (%g MB per file%s%s)", LOG_MAX_TOTAL_MB, DATA_DIR, logs_mod.file_bytes / logs_mod.MB,
+             ", gzipped archives" if logs_mod.compress else "",
+             f", archives kept {LOG_KEEP_DAYS:g} days" if LOG_KEEP_DAYS else "")
+    if removed:
+        log.info("Removed %d old log archive(s) to stay under the limit", len(removed))
 
 
 def _claim_single_instance() -> bool:

@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from llmbot import logs
+
 log = logging.getLogger("llmbot.store")
 
 SCHEMA = """
@@ -82,6 +84,8 @@ class FileStore:
         try:
             with self.jobs_file.open("a", encoding="utf-8") as f:
                 f.write(json.dumps({"finished_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), **row}, ensure_ascii=False) + "\n")
+            if self.jobs_file.stat().st_size > logs.file_bytes:  # same size limits as bot.log
+                logs.archive(self.jobs_file)
         except OSError:
             log.exception("Could not append to %s", self.jobs_file.name)
 
