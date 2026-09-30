@@ -447,7 +447,15 @@ async def state(request: web.Request) -> dict:
     since = int(request.query.get("since") or 0)
     events = [e for e in core._events if e["id"] > since][-200:]
     pending = core.power_pending()
+    # ?lite=1: the page isn't showing the Now tab, so skip what only it shows (nvidia-smi, Ollama's model lists).
+    heavy = {} if request.query.get("lite") else {
+        "models": await cached("models", 4, ollama_models),
+        "ollama_up": await cached("ollama_up", 10, ollama_up),
+        "installed": await cached("installed", 30, installed_models),
+        "machine": {**machine(), "cpu": await cached("cpu", 2, cpu), "gpu": await cached("gpu", 2, gpu)},
+    }
     return {
+        **heavy,
         "now": time.time(), "timezone": core.TIMEZONE,
         "bot": {"version": core.__version__, "started": core.STARTED_AT, "pid": os.getpid(),
                 "storage": core.STORE.describe(), "claude": core.CLAUDE_VERSION, "frontends": frontends(),
@@ -458,13 +466,9 @@ async def state(request: web.Request) -> dict:
                                **_names(a.get("channel_id"), a.get("user_id"))} for a in list(core._inflight.values())],
                  "whisper_loaded": core._whisper is not None,
                  "power": {**pending, **_names(pending.get("channel_id"), pending.get("user_id"))} if pending else None},
-        "models": await cached("models", 4, ollama_models),
-        "ollama_up": await cached("ollama_up", 10, ollama_up),
-        "installed": await cached("installed", 30, installed_models),
         "spend": {"today": core.spent_today(), "daily_budget": core.CC_DAILY_BUDGET_USD,
                   "job_budget": core.CC_MAX_BUDGET_USD,
                   "jobs_today": core._usage.get("jobs", 0) if core._usage.get("date") == core.now_local().date().isoformat() else 0},
-        "machine": {**machine(), "cpu": await cached("cpu", 2, cpu), "gpu": await cached("gpu", 2, gpu)},
         **schedule(),
         "events": events,
     }

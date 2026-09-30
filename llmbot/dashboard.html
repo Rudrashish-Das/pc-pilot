@@ -458,9 +458,10 @@ function mergeEvents(list) {
 
 async function poll() {
   try {
-    const st = await getJSON("/api/state?since=" + S.lastId);
+    // Off the Now tab, "lite": no GPU/CPU/model stats (the laptop skips nvidia-smi); the last ones are kept.
+    const st = await getJSON("/api/state?since=" + S.lastId + (S.tab === "now" ? "" : "&lite=1"));
     S.skew = Date.now() / 1000 - st.now;
-    S.state = st;
+    S.state = { ...(S.state || {}), ...st };
     mergeEvents(st.events || []);
     S.failures = 0;
     $("offline").classList.add("hide");
@@ -485,19 +486,32 @@ function render() {
   $("sub").textContent = (working ? "working" : "idle") + " · up " + dur(st.now - b.started);
   $("n-sched").textContent = st.reminders.length + st.tasks.length;
   if (S.tab === "now") renderNow();
-  if (S.tab === "activity") renderFeed();
-  if (S.tab === "schedule") renderSchedule();
+  if (S.tab === "activity" && changed("feed", [S.events.length, S.lastId, S.oldestId])) renderFeed();
+  if (S.tab === "schedule" && changed("schedule", [st.tasks, st.reminders, Math.floor(nowS() / 60)])) renderSchedule();
+}
+
+// Each section is redrawn only when what it shows changed (the page polls every few seconds; most polls change
+// nothing, and rebuilding the DOM costs battery on a phone). "minute" makes relative times ("in 25 min") tick.
+S.sig = {};
+function changed(key, value) {
+  const s = JSON.stringify(value);
+  if (S.sig[key] === s) return false;
+  S.sig[key] = s;
+  return true;
 }
 
 function renderNow() {
-  const st = S.state, busy = st.busy;
+  const st = S.state, busy = st.busy, minute = Math.floor(nowS() / 60);
   // power
   const p = busy.power;
+  if (changed("power", [p, minute])) {
   $("power").classList.toggle("hide", !p);
   if (p) $("power").textContent = `🔌 ${p.action} requested ${ago(p.at)}${p.who ? " by " + p.who : ""}. The bot posts in the chat when it's back.`;
+  }
   // right now
-  const kids = [];
   const j = busy.claude;
+  if (changed("busy", [j, busy.inflight, busy.claude_waiting, busy.local_locked, j || busy.inflight.length ? Math.floor(st.now) : 0])) {
+  const kids = [];
   $("busy-card").classList.toggle("live", !!(j || busy.inflight.length));
   if (j) {
     kids.push(h("div", {},
@@ -518,15 +532,16 @@ function renderNow() {
   if (busy.claude_waiting) kids.push(h("div", { class: "small muted", style: "margin-top:10px" }, `${busy.claude_waiting} Claude Code job(s) waiting in line`));
   if (!kids.length) kids.push(h("div", { class: "empty" }, busy.local_locked ? "The local model is busy." : "Idle. Nothing is running."));
   put($("busy"), kids);
+  }
   // spend
   const sp = st.spend;
-  put($("spend"), h("div", { class: "big" }, usd(sp.today)),
+  if (changed("spend", sp)) put($("spend"), h("div", { class: "big" }, usd(sp.today)),
     sp.daily_budget > 0 ? meter(sp.today / sp.daily_budget, `of ${usd(sp.daily_budget)} daily cap · ${sp.jobs_today} job(s) today`)
       : h("div", { class: "small muted" }, `${sp.jobs_today} job(s) today · no daily cap`),
     h("div", { class: "small muted", style: "margin-top:6px" }, `API-equivalent cost on the Anthropic backend. Per-job cap ${usd(sp.job_budget)}.`));
   // models
   const ms = st.models || [];
-  put($("models"),
+  if (changed("models", [ms, st.ollama_up, busy.whisper_loaded])) put($("models"),
     ms.length ? h("div", { class: "list" }, ms.map((m) => h("div", { class: "item" },
       h("div", { class: "row" }, h("b", {}, m.name), h("span", { class: "small muted" }, m.until ? "until " + clock(iso(m.until)) : "")),
       h("div", { class: "small muted" }, `${(m.size_mb / 1024).toFixed(1)} GB · ${m.size_mb ? Math.round((m.vram_mb / m.size_mb) * 100) : 0}% on GPU` + (m.context ? ` · ${Math.round(m.context / 1024)}k ctx` : "")))))
@@ -534,7 +549,7 @@ function renderNow() {
     busy.whisper_loaded ? h("div", { class: "small muted", style: "margin-top:8px" }, "🎙️ Whisper (voice notes) is loaded") : null);
   // installed
   const inst = st.installed;
-  if (inst) {
+  if (inst && changed("installed", [inst, ms.map((m) => m.name), st.ollama_up])) {
     const bare = (n) => (n || "").replace(/:latest$/, "");
     const loaded = new Set(ms.map((m) => bare(m.name)));
     const local = inst.local.map((m) => h("div", { class: "item" },
@@ -555,6 +570,7 @@ function renderNow() {
   }
   // machine
   const mc = st.machine || {};
+  if (changed("machine", mc)) {
   const rows = [];
   const bar = (label, value, frac, note) => rows.push(h("div", { style: rows.length ? "margin-top:8px" : "" },
     h("div", { class: "row small" }, h("span", {}, label), h("span", {}, value)), meter(frac, note)));
@@ -572,9 +588,10 @@ function renderNow() {
   if (mc.disk) facts.push(["Disk free", `${mc.disk.free_gb} of ${mc.disk.total_gb} GB`]);
   if (mc.host) facts.push(["Name", mc.host]);
   put($("machine"), rows, facts.length ? h("div", { style: rows.length ? "margin-top:10px" : "" }, kv(facts)) : null);
+  }
   // bot
   const b = st.bot;
-  put($("botinfo"), kv([
+  if (changed("bot", b)) put($("botinfo"), kv([
     ...b.frontends.map((f) => [f.name, h("span", {}, h("span", { class: "badge " + (f.ok ? "ok" : "err") }, f.ok ? "online" : "offline"), " ", f.detail)]),
     ["Up since", when(b.started)],
     ["Default engine", b.default_engine + " · " + b.local_model],
@@ -583,6 +600,7 @@ function renderNow() {
     ["Version", b.version],
   ]));
   // coming up
+  if (changed("next", [st.reminders, st.tasks, minute])) {
   const up = [
     ...st.reminders.map((r) => ({ ts: iso(r.when), icon: "⏰", text: r.text, sub: r.who })),
     ...st.tasks.filter((t) => t.next).map((t) => ({ ts: iso(t.next), icon: t.engine === "claude" ? "🤖" : "💻", text: t.description, sub: t.cron ? "cron " + t.cron : "once" })),
@@ -590,9 +608,13 @@ function renderNow() {
   put($("next"), up.length ? h("div", { class: "list" }, up.map((u) => h("div", { class: "item" },
     h("div", { class: "row small" }, h("span", {}, u.icon + " " + when(u.ts)), h("span", { class: "muted" }, until(u.ts))),
     h("div", { class: "body clip" }, u.text)))) : h("div", { class: "empty" }, "No reminders or scheduled prompts."));
+  }
   // latest
-  put($("latest"), S.events.slice(0, innerWidth >= 1800 ? 10 : 5).map(eventItem));
-  if (!S.events.length) put($("latest"), h("div", { class: "empty" }, "Nothing yet."));
+  const n = innerWidth >= 1800 ? 10 : 5;
+  if (changed("latest", [S.events.slice(0, n).map((e) => e.id), n])) {
+    put($("latest"), S.events.slice(0, n).map(eventItem));
+    if (!S.events.length) put($("latest"), h("div", { class: "empty" }, "Nothing yet."));
+  }
 }
 
 function renderFeed() {
@@ -1086,6 +1108,7 @@ function show(tab) {
   if (tab === "log") loadLog().catch(() => {});
   if (tab === "activity" && S.events.length < 60 && !S.noMore) loadOlder().catch(() => {});
   document.body.classList.toggle("chatting", tab === "chat");
+  if (S.state && tab === "now") tick();  // the Now tab needs fresh machine/model stats (other tabs poll "lite")
   if (tab === "chat") {
     sizeChat();
     if (C.id) pollChat(); else loadChats(null).catch((err) => { put($("msgs"), h("div", { class: "empty" }, err.message)); });
@@ -1099,16 +1122,20 @@ $("older-jobs").addEventListener("click", () => loadJobs(true).catch(() => {}));
 chips($("filters"), FILTERS, S.filter, setFilter);
 chips($("log-filters"), LOG_LEVELS, S.logLevel, setLogLevel);
 
-let timer = null, slow = 0;
+// Refresh pace: every 3 s on the Now tab (live progress, CPU/GPU), every 10 s elsewhere (the Chat tab polls its own
+// messages), paused while the page is hidden. Jobs refresh every 30 s.
+let timer = null, lastJobs = 0, gen = 0;
 async function tick() {
+  const mine = ++gen;  // a newer tick (tab switch, page shown again) takes over the schedule
+  clearTimeout(timer);
   if (document.hidden) return;
   await poll();
-  if (++slow % 10 === 0) {  // every ~30 s
-    if (S.tab === "jobs") loadJobs(false).catch(() => {});
-  }
-  if (S.tab === "log" && slow % 2 === 0) loadLog().catch(() => {});
+  if (mine !== gen) return;
+  if (S.tab === "jobs" && Date.now() - lastJobs > 30000) { lastJobs = Date.now(); loadJobs(false).catch(() => {}); }
+  if (S.tab === "log") loadLog().catch(() => {});
+  timer = setTimeout(tick, S.tab === "now" ? 3000 : 10000);
 }
-function start() { clearInterval(timer); timer = setInterval(tick, 3000); tick(); }
+function start() { tick(); }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { start(); if (S.tab === "chat") pollChat(); } });
 let saved = "now";
 try { saved = localStorage.getItem("tab") || "now"; } catch (e) {}

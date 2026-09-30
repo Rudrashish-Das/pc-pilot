@@ -113,6 +113,9 @@ async def main():
         since = st["events"][-1]["id"]
         check((await c.get(f"/api/state?since={since}")).json()["events"] == [], "state: since= returns only new events")
         check(isinstance(st["machine"], dict) and "spend" in st, "state: machine and spend")
+        lite = (await c.get("/api/state?lite=1")).json()
+        check(not {"machine", "models", "installed", "ollama_up"} & set(lite) and "busy" in lite and "tasks" in lite,
+              "lite refresh skips machine/model stats (no nvidia-smi off the Now tab)")
         inst = st["installed"]
         check(isinstance(inst["local"], list) and inst["default_local"] == B.LLM_MODEL and "whisper" in inst,
               f"state: installed models ({len(inst['local'])} local; none offline is fine)")
