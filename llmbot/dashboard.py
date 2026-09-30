@@ -386,6 +386,9 @@ def schedule() -> dict:
     for t in core._tasks.values():
         tasks.append({"id": t["id"], "description": t["description"], "prompt": core.clip(t["prompt"], 600),
                       "engine": t.get("engine", "local"), "cron": t.get("cron") or None, "at": t.get("at"),
+                      "model": t.get("model"), "backend": t.get("backend"), "workspace": t.get("workspace"),
+                      "perm": t.get("perm", "read"), "reminders": bool(t.get("reminders")),
+                      "approved_by": core.user_label(t["approved_by"]) if t.get("approved_by") else None,
                       "next": _iso(core.next_run(t["id"])), **_names(t["channel_id"], t["created_by"])})
     tasks.sort(key=lambda t: t["next"] or "~")
     rems = [{"id": r["id"], "text": r["text"], "when": r["when"], **_names(r["channel_id"], r["user_id"])}

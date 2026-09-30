@@ -106,6 +106,8 @@ async def main():
         st = (await c.get("/api/state")).json()
         check(st["bot"]["version"] == B.__version__ and "frontends" in st["bot"], "state: bot info")
         check(any(x["id"] == t["id"] and x["next"] for x in st["tasks"]), "state: tasks with next run")
+        tt = next(x for x in st["tasks"] if x["id"] == t["id"])
+        check(tt["perm"] == "read" and tt["model"] and tt["reminders"] is False, f"state: task runs on {tt['model']}, read-only")
         check(st["busy"]["claude"] is None and st["busy"]["inflight"] == [], "state: idle")
         check(len(st["events"]) == len(B._events), "state: events")
         since = st["events"][-1]["id"]

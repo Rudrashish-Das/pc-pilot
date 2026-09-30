@@ -235,7 +235,7 @@ function statusBadge(e) {
   if (e.level === "error") return h("span", { class: "badge err" }, s || "error");
   if (e.level === "warning") return h("span", { class: "badge warn" }, "warning");
   if (!s) return null;
-  const cls = { success: "ok", fired: "ok", ran: "ok", set: "run", scheduled: "run", late: "warn", stopped: "warn", cancelled: "" }[s];
+  const cls = { success: "ok", fired: "ok", ran: "ok", set: "run", scheduled: "run", changed: "run", late: "warn", stopped: "warn", cancelled: "" }[s];
   return h("span", { class: "badge " + (cls || "") }, s);
 }
 
@@ -433,8 +433,15 @@ function renderSchedule() {
     h("div", { class: "head" }, h("span", {}, (t.engine === "claude" ? "🤖 " : "💻 ") + (t.cron ? "cron " + t.cron : "once")),
       t.next ? h("span", { class: "badge run" }, "next " + until(iso(t.next))) : null, h("span", { class: "t" }, t.id)),
     h("div", { class: "body" }, t.description),
+    h("div", { class: "small", style: "margin-top:3px" },
+      [t.model, t.engine === "claude" && t.backend && t.backend !== "anthropic" ? "on " + t.backend : null].filter(Boolean).join(" ") || "—", " ",
+      h("span", { class: "badge " + (t.perm === "full" ? "err" : t.perm === "edit" ? "warn" : "") }, { read: "read-only", edit: "can edit files", full: "full access" }[t.perm] || t.perm),
+      t.reminders ? h("span", { class: "badge run", style: "margin-left:4px" }, "can set reminders") : null),
     h("div", { class: "small muted" }, [t.next ? when(iso(t.next)) : null, t.who, t.where].filter(Boolean).join(" · ")),
-    h("div", { class: "more" }, t.prompt))) : h("div", { class: "empty" }, "No scheduled prompts."));
+    h("div", { class: "more" }, t.prompt,
+      t.workspace || t.approved_by ? h("div", { class: "mono", style: "margin-top:6px" },
+        [t.workspace ? "workspace " + t.workspace : null, t.approved_by ? "approved by " + t.approved_by : null].filter(Boolean).join(" · ")) : null)))
+    : h("div", { class: "empty" }, "No scheduled prompts."));
 }
 
 async function loadOlder() {
