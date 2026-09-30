@@ -548,14 +548,28 @@ class WebFrontend:
         return self._result(fi)
 
 
-HELP = """**Chatting from the dashboard**
-Same bot as on Discord and Telegram, over your local network, so it also works without internet (the local model, and Claude Code on the Ollama backend). Each chat here has its own engine, model and Claude Code session, set in ⚙️ /panel.
+COMMANDS = [  # (name, arguments, what it does): for /help and the page's autocomplete
+    ("panel", "", "Engine, models, new session, settings for this chat"),
+    ("claude", "<task>", "Run a task with Claude Code"),
+    ("local", "<message>", "Ask the local model directly"),
+    ("new", "", "Start a new Claude Code session"),
+    ("compact", "", "Shrink a long Claude Code conversation"),
+    ("stop", "", "Stop the reply that's running"),
+    ("tasks", "", "List and cancel reminders and scheduled prompts"),
+    ("remind", "<when> | <what>", "One-time reminder, e.g. in 10 min | take meds"),
+    ("reset", "", "Clear the local model's chat memory"),
+    ("unload", "", "Free GPU memory now"),
+    ("power", "", "Lock, sleep, restart or shut down the laptop"),
+    ("help", "", "How this chat works"),
+]
 
-**Commands**
-/panel: engine, models, new session, settings · /tasks: reminders and scheduled prompts
-/claude <task> · /local <message> · /new: new Claude Code session · /compact · /stop
-/remind <when> | <what> · /reset: clear the local model's memory · /unload: free GPU memory · /power
-📎 Attach images, PDFs and code for Claude Code."""
+HELP = ("**Chatting from the dashboard**\n"
+        "Same bot as on Discord and Telegram, over your local network, so it also works without internet (the local "
+        "model, and Claude Code on the Ollama backend). Each chat here has its own engine, model and Claude Code "
+        "session, set in ⚙️ /panel.\n\n**Commands** (type / to pick one)\n"
+        + "\n".join(f"/{n}{' ' + a if a else ''}: {d}" for n, a, d in COMMANDS)
+        + "\n\n📎 Attach images, PDFs and code for Claude Code. 🎙️ The mic button turns speech into text, "
+          "transcribed on the laptop.")
 
 
 def start(core_module) -> WebFrontend:

@@ -63,6 +63,12 @@ function Get-DashboardPort {
     return 8765
 }
 
+function Get-DashboardHttpsPort {
+    $p = Get-EnvValue "DASHBOARD_HTTPS_PORT"
+    if ($p -match "^\d+$") { return [int]$p }
+    return 8766
+}
+
 function Start-Bot {
     if (Get-BotProcess) { "Already running."; return }
     Start-Process -FilePath $Pythonw -ArgumentList "-m", "llmbot" -WorkingDirectory $Dir
@@ -149,6 +155,8 @@ switch ($Action) {
         "On this PC:     http://127.0.0.1:$port/?key=$key"
         if ($name) { "On your Wi-Fi:  http://$($name.ToLower()).local:$port/?key=$key   (the name the bot announces)" }
         foreach ($ip in $ips) { "By address:     http://${ip}:$port/?key=$key" }
+        $https = Get-DashboardHttpsPort
+        if ($https -and $name) { "With voice:     https://$($name.ToLower()).local:$https/?key=$key   (phones allow the mic only on https; accept the warning once)" }
         "The link holds the access key; don't share it. Phones can't connect? Run: .\scripts\bot_control.ps1 firewall (as administrator)"
         Start-Process "http://127.0.0.1:$port/?key=$key"
     }
@@ -157,12 +165,13 @@ switch ($Action) {
         if (-not (Test-Admin)) { Write-Error "Run PowerShell as administrator for this one."; exit 1 }
         Get-NetFirewallRule -DisplayName "LLM bot dashboard*" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
         # Private networks only (home Wi-Fi). On networks Windows calls Public (cafes, hotels), it stays blocked.
-        New-NetFirewallRule -DisplayName "LLM bot dashboard" -Direction Inbound -Protocol TCP -LocalPort $port `
+        $ports = @($port, (Get-DashboardHttpsPort)) | Where-Object { $_ -gt 0 }
+        New-NetFirewallRule -DisplayName "LLM bot dashboard" -Direction Inbound -Protocol TCP -LocalPort $ports `
             -Profile Private -Action Allow | Out-Null
         # mDNS: phones asking "where is llmbot.local?" (DASHBOARD_NAME)
         New-NetFirewallRule -DisplayName "LLM bot dashboard (name)" -Direction Inbound -Protocol UDP -LocalPort 5353 `
             -Profile Private -Action Allow | Out-Null
-        "Allowed inbound TCP $port and UDP 5353 (the llmbot.local name) on Private networks."
+        "Allowed inbound TCP $($ports -join ', ') (http, https) and UDP 5353 (the llmbot.local name) on Private networks."
         $public = Get-NetConnectionProfile | Where-Object NetworkCategory -eq "Public"
         foreach ($n in $public) {
             "Note: '$($n.Name)' is set to Public, so this doesn't apply there. If it's your home network, make it Private:"

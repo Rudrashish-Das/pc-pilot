@@ -539,8 +539,32 @@ def _chat_api(fn):
     return wrapper
 
 
+async def chat_transcribe(request, fe, chat) -> dict:
+    """Voice input: a recording from the page -> text, with the bot's local Whisper (nothing leaves the laptop)."""
+    if not core.VOICE_ENABLED:
+        return {"error": "Voice is off (VOICE_ENABLED=false)."}
+    data = b""
+    reader = await request.multipart()
+    async for part in reader:
+        if part.name == "audio":
+            data = bytes(await part.read(decode=False))
+            break
+    if not data:
+        return {"error": "no audio received"}
+    if len(data) > 20 * 1024 * 1024:
+        return {"error": "recording too large"}
+    try:
+        text, seconds = await core.transcribe(data)
+    except Exception as e:
+        log.warning("dashboard transcription failed: %s", e)
+        return {"error": core.oneline(core.with_hint(f"Couldn't transcribe that: {type(e).__name__}: {e}", e), 300)}
+    return {"text": text.strip(), "seconds": round(seconds, 1)}
+
+
 async def chats_list(request, fe, chat) -> dict:
-    return {"role": core.DASHBOARD_CHAT, "claude": core.CC_ENABLED and core.is_owner(core.WEB_USER_ID),
+    return {"commands": [{"name": n, "args": a, "desc": d} for n, a, d in webchat.COMMANDS],
+            "voice": core.VOICE_ENABLED, "https_port": core.DASHBOARD_HTTPS_PORT if _https_on else None,
+            "role": core.DASHBOARD_CHAT, "claude": core.CC_ENABLED and core.is_owner(core.WEB_USER_ID),
             "chats": [c.summary() for c in sorted(fe.chats.values(), key=lambda c: -c.updated)]}
 
 
@@ -634,6 +658,7 @@ def make_app() -> web.Application:
     app.router.add_post("/api/chats/{cid}/rename", _chat_api(chat_rename))
     app.router.add_post("/api/chats/{cid}/delete", _chat_api(chat_delete))
     app.router.add_get("/api/chat-file/{name}", chat_file)
+    app.router.add_post("/api/transcribe", _chat_api(chat_transcribe))
     app.router.add_get("/", page)
     for route, path in IMAGES.items():  # no key needed: the login page shows them too
         app.router.add_get(route, lambda request, path=path: web.FileResponse(path, headers={"Cache-Control": "max-age=86400"}))
@@ -643,6 +668,61 @@ def make_app() -> web.Application:
     app.router.add_get("/api/jobs", api(jobs))
     app.router.add_get("/api/log", api(logtail))
     return app
+
+
+_https_on = False
+CERT_NAMES = ("dashboard-cert.pem", "dashboard-key.pem")
+
+
+def cert_hosts() -> tuple[list[str], list[str]]:
+    """(DNS names, IPs) the certificate should cover: llmbot.local, this PC's name, its LAN addresses."""
+    names = ["localhost", f"{socket.gethostname().lower()}.local"]
+    if mdns_host():
+        names.insert(0, mdns_host())
+    return names, sorted(set(lan_ips()) | {"127.0.0.1"})
+
+
+def tls_context():
+    """An SSL context with a self-signed certificate from data/, made on first use and again when the LAN address
+    isn't in it any more (browsers warn once per device either way: nobody vouches for a home laptop)."""
+    import datetime as dt
+    import ssl
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    cert_path, key_path = (core.DATA_DIR / n for n in CERT_NAMES)
+    names, ips = cert_hosts()
+    fresh = False
+    if cert_path.exists() and key_path.exists():
+        try:
+            cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+            san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+            have = {str(i) for i in san.get_values_for_type(x509.IPAddress)} | set(san.get_values_for_type(x509.DNSName))
+            fresh = set(names) | set(ips) <= have and cert.not_valid_after_utc > dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=30)
+        except Exception:
+            fresh = False
+    if not fresh:
+        key = ec.generate_private_key(ec.SECP256R1())
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, names[0])])
+        now = dt.datetime.now(dt.timezone.utc)
+        cert = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject).public_key(key.public_key())
+                .serial_number(x509.random_serial_number()).not_valid_before(now - dt.timedelta(days=1))
+                .not_valid_after(now + dt.timedelta(days=825))
+                .add_extension(x509.SubjectAlternativeName([x509.DNSName(n) for n in names]
+                                                           + [x509.IPAddress(ipaddress.ip_address(i)) for i in ips]), False)
+                .add_extension(x509.BasicConstraints(ca=False, path_length=None), True)
+                .add_extension(x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]), False)
+                .sign(key, hashes.SHA256()))
+        key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                               serialization.NoEncryption()))
+        cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        log.info("Made a self-signed dashboard certificate for %s", ", ".join(names + ips))
+    ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ctx.load_cert_chain(cert_path, key_path)
+    return ctx
 
 
 async def start(core_module) -> None:
@@ -664,13 +744,24 @@ async def start(core_module) -> None:
         webchat.start(core)
     log.info("Dashboard on http://%s:%s (%s); owners get the link with /dashboard",
              core.DASHBOARD_HOST, core.DASHBOARD_PORT, ", ".join(lan_ips()))
+    global _https_on
+    if core.DASHBOARD_HTTPS_PORT:
+        try:
+            ctx = await asyncio.to_thread(tls_context)
+            await web.TCPSite(_runner, core.DASHBOARD_HOST, core.DASHBOARD_HTTPS_PORT, ssl_context=ctx).start()
+            _https_on = True
+            log.info("Dashboard also on https://…:%s (self-signed; needed for the chat's microphone on phones)",
+                     core.DASHBOARD_HTTPS_PORT)
+        except Exception as e:  # the http dashboard keeps working
+            log.warning("Dashboard HTTPS not started on port %s: %s", core.DASHBOARD_HTTPS_PORT, e)
     if mdns_host():
         global _mdns_task
         _mdns_task = asyncio.create_task(_mdns_loop())
 
 
 async def stop() -> None:
-    global _runner, _mdns_task
+    global _runner, _mdns_task, _https_on
+    _https_on = False
     if _mdns_task is not None:
         _mdns_task.cancel()
         _mdns_task = None
@@ -699,9 +790,14 @@ def link_text(angle: bool = True) -> str:
     else:
         body = "\n".join(fmt(u) for u in urls)
         after = "after that the plain address works"
+    voice = ""
+    if _https_on and urls:
+        secure = urls[0].replace("http://", "https://", 1).replace(f":{core.DASHBOARD_PORT}/", f":{core.DASHBOARD_HTTPS_PORT}/", 1)
+        voice = (f"\n🎙️ To talk to it (voice input in the chat), use {fmt(secure)}: phones only allow the microphone "
+                 "on https. Accept the browser's warning once (the certificate is the laptop's own).")
     return ("📊 **Dashboard**: open this on a phone or PC on the same Wi-Fi. It holds the access key, so don't "
-            f"share it.\n{body}\n-# The first visit stores a cookie; {after}. If it doesn't load, set your Wi-Fi to "
-            "Private in Windows and run `scripts\\bot_control.ps1 firewall` once (as admin).")
+            f"share it.\n{body}{voice}\n-# The first visit stores a cookie; {after}. If it doesn't load, set your "
+            "Wi-Fi to Private in Windows and run `scripts\\bot_control.ps1 firewall` once (as admin).")
 
 
 LOGIN = """<!doctype html><html lang="en"><head><meta charset="utf-8">

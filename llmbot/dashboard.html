@@ -170,6 +170,17 @@ body.chatting #offline { margin-bottom: 8px; }
   border-radius: 12px; border: 1px solid var(--line); background: var(--card); color: var(--text); }
 .composer .btn { padding: 9px 12px; }
 .composer .send { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.cmds { border: 1px solid var(--line); background: var(--card); border-radius: 12px; margin-bottom: 6px;
+  max-height: 260px; overflow-y: auto; box-shadow: 0 -6px 20px #0002; }
+.cmds div { padding: 8px 12px; cursor: pointer; display: flex; gap: 10px; align-items: baseline; }
+.cmds div + div { border-top: 1px solid var(--line); }
+.cmds div.on { background: var(--chip); }
+.cmds b { font-family: var(--mono); font-size: 13.5px; white-space: nowrap; }
+.cmds .args { color: var(--muted); font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+.cmds .d { color: var(--muted); font-size: 13px; margin-left: auto; text-align: right; }
+.composer .mic.rec { background: var(--err); border-color: var(--err); color: #fff; animation: pulse 1.4s infinite;
+  font-variant-numeric: tabular-nums; }
+.composer .mic.busy { opacity: .6; }
 .attached { display: flex; gap: 6px; flex-wrap: wrap; font-size: 12.5px; padding-top: 6px; }
 .attached span { background: var(--chip); border-radius: 8px; padding: 2px 8px; }
 .toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); z-index: 20; max-width: min(92vw, 480px);
@@ -208,10 +219,13 @@ dialog .row { justify-content: flex-end; }
       <div class="engine" id="chat-engine" title="Change in ⚙️"></div>
       <div class="msgs" id="msgs"></div>
       <div class="composer-wrap">
+        <div class="cmds hide" id="cmds" role="listbox"></div>
         <div class="attached" id="attached"></div>
         <form class="composer" id="composer">
           <input type="file" id="chat-files" multiple hidden>
+          <input type="file" id="chat-audio" accept="audio/*" capture hidden>
           <button type="button" class="btn" id="chat-attach" title="Attach files">📎</button>
+          <button type="button" class="btn mic" id="chat-mic" title="Speak: turned into text on the laptop">🎙️</button>
           <textarea id="chat-input" rows="1" placeholder="Message the bot" enterkeyhint="send"></textarea>
           <button class="btn send" id="chat-send">Send</button>
         </form>
@@ -788,6 +802,8 @@ function applyChat(data) {
 async function loadChats(selectId) {
   const r = await getJSON("/api/chats");
   C.chats = r.chats; C.role = r.role; C.claude = r.claude;
+  C.commands = r.commands || []; C.httpsPort = r.https_port;
+  $("chat-mic").classList.toggle("hide", !r.voice);
   let id = selectId || C.id;
   try { id = id || localStorage.getItem("chat"); } catch (e) {}
   if (!r.chats.length) { const n = await postJSON("/api/chats", {}); C.chats = [n.chat]; id = n.chat.id; }
@@ -872,10 +888,96 @@ function autosize() { const t = $("chat-input"); t.style.height = "auto"; t.styl
 function sizeChat() { document.documentElement.style.setProperty("--head", document.querySelector("header").offsetHeight + "px"); }
 
 $("composer").addEventListener("submit", sendChat);
-$("chat-input").addEventListener("input", autosize);
-$("chat-input").addEventListener("keydown", (e) => {  // Enter sends on a keyboard; on phones it's a new line
+// command autocomplete: typing "/" lists the commands; tap one, or arrows + Tab/Enter
+C.commands = []; C.cmdSel = 0; C.cmdList = [];
+function updateCmds() {
+  const m = $("chat-input").value.match(/^\/(\w*)$/);
+  C.cmdList = m ? C.commands.filter((c) => c.name.startsWith(m[1].toLowerCase())) : [];
+  if (!C.cmdList.length || (C.cmdList.length === 1 && C.cmdList[0].name === m[1])) { $("cmds").classList.add("hide"); C.cmdList = []; return; }
+  C.cmdSel = Math.min(C.cmdSel, C.cmdList.length - 1);
+  put($("cmds"), C.cmdList.map((c, k) => h("div", { class: k === C.cmdSel ? "on" : null, role: "option",
+    onmousedown: (e) => { e.preventDefault(); pickCmd(k); } },
+    h("b", {}, "/" + c.name), c.args ? h("span", { class: "args" }, c.args) : null, h("span", { class: "d" }, c.desc))));
+  $("cmds").classList.remove("hide");
+  $("cmds").children[C.cmdSel]?.scrollIntoView({ block: "nearest" });
+}
+function pickCmd(k) {
+  const c = C.cmdList[k];
+  if (!c) return;
+  $("cmds").classList.add("hide"); C.cmdList = [];
+  $("chat-input").value = "/" + c.name + (c.args ? " " : "");
+  $("chat-input").focus();
+  if (!c.args) sendChat(new Event("submit"));  // nothing to add: run it
+}
+$("chat-input").addEventListener("input", () => { autosize(); C.cmdSel = 0; updateCmds(); });
+$("chat-input").addEventListener("blur", () => setTimeout(() => $("cmds").classList.add("hide"), 150));
+$("chat-input").addEventListener("keydown", (e) => {
+  if (C.cmdList.length) {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      C.cmdSel = (C.cmdSel + (e.key === "ArrowDown" ? 1 : -1) + C.cmdList.length) % C.cmdList.length;
+      updateCmds(); return;
+    }
+    if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) { e.preventDefault(); pickCmd(C.cmdSel); return; }
+    if (e.key === "Escape") { $("cmds").classList.add("hide"); C.cmdList = []; return; }
+  }
+  // Enter sends on a keyboard; on phones it's a new line (the Send button sends)
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !matchMedia("(pointer: coarse)").matches) { e.preventDefault(); sendChat(e); }
 });
+
+// voice input: record -> the laptop's Whisper -> text in the box (edit, then send). Browsers only allow the
+// microphone on https (or localhost); on plain http the button opens the phone's own recorder instead.
+C.rec = null;
+const canRecord = () => window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder;
+async function transcribeBlob(blob, name) {
+  const mic = $("chat-mic");
+  mic.classList.add("busy"); mic.disabled = true; mic.textContent = "…";
+  try {
+    const fd = new FormData();
+    fd.append("audio", blob, name);
+    const r = await fetch("/api/transcribe", { method: "POST", credentials: "same-origin", body: fd });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || data.error) throw new Error(data.error || "HTTP " + r.status);
+    if (!data.text) { toast("Didn't catch any words."); return; }
+    const t = $("chat-input");
+    t.value = (t.value.trim() ? t.value.trimEnd() + " " : "") + data.text;
+    autosize(); t.focus();
+  } catch (err) { toast("Voice: " + err.message); }
+  finally { mic.classList.remove("busy"); mic.disabled = false; mic.textContent = "🎙️"; }
+}
+async function toggleRecord() {
+  const mic = $("chat-mic");
+  if (C.rec) { C.rec.stop(); return; }
+  if (!canRecord()) {
+    if (C.httpsPort && location.protocol === "http:") {
+      toast(`Live recording needs the https page: https://${location.hostname}:${C.httpsPort} (accept the warning once). Opening your phone's recorder instead.`);
+    }
+    $("chat-audio").click();
+    return;
+  }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (err) { toast("No microphone access: " + err.message); return; }
+  const rec = new MediaRecorder(stream);
+  const chunks = [], started = Date.now();
+  rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  rec.onstop = () => {
+    stream.getTracks().forEach((t) => t.stop());
+    clearInterval(rec.tick); C.rec = null; mic.classList.remove("rec"); mic.textContent = "🎙️";
+    const type = rec.mimeType || chunks[0]?.type || "audio/webm";
+    const ext = type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : "webm";
+    if (Date.now() - started > 400 && chunks.length) transcribeBlob(new Blob(chunks, { type }), "voice." + ext);
+  };
+  rec.tick = setInterval(() => {
+    const s = Math.floor((Date.now() - started) / 1000);
+    mic.textContent = `■ ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    if (s >= 170) rec.stop();  // the bot's voice limit is 180 s (VOICE_MAX_SECONDS)
+  }, 250);
+  C.rec = rec; mic.classList.add("rec"); mic.textContent = "■ 0:00";
+  rec.start();
+}
+$("chat-mic").addEventListener("click", toggleRecord);
+$("chat-audio").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) transcribeBlob(f, f.name); });
 $("chat-attach").addEventListener("click", () => $("chat-files").click());
 $("chat-files").addEventListener("change", (e) => { C.files.push(...e.target.files); e.target.value = ""; renderAttached(); });
 $("chat-pick").addEventListener("change", (e) => openChat(e.target.value));

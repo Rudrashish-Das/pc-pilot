@@ -382,6 +382,9 @@ DASHBOARD_HOST = _env("DASHBOARD_HOST", "0.0.0.0")  # 127.0.0.1 = this PC only
 DASHBOARD_TOKEN = _env("DASHBOARD_TOKEN")
 # Name announced on the local network (mDNS): http://llmbot.local:8765 instead of the IP. Empty = don't announce.
 DASHBOARD_NAME = _env("DASHBOARD_NAME", "llmbot")
+# The same dashboard over HTTPS (self-signed certificate in data/): phones only allow the microphone (voice input in
+# the chat) on https pages. 0 = off.
+DASHBOARD_HTTPS_PORT = int(_num("DASHBOARD_HTTPS_PORT", 8766))
 STORE: Any = store_mod.FileStore(DATA_DIR)
 
 _settings: dict[str, dict] = {}

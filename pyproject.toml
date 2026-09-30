@@ -13,6 +13,7 @@ dependencies = [
     "httpx>=0.27",
     "aiohttp>=3.9",  # the web dashboard (discord.py needs it too)
     "zeroconf>=0.132",  # announces the dashboard as llmbot.local
+    "cryptography>=42",  # the dashboard's self-signed https certificate (phones need https for the microphone)
     "python-dotenv>=1.0",
     "apscheduler>=3.10,<4",
     "trafilatura>=1.12",

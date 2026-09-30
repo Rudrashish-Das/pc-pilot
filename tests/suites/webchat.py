@@ -151,6 +151,45 @@ async def main():
         check((await httpx.AsyncClient(base_url=base).post("/login", content=big,
                headers={"Content-Type": "application/x-www-form-urlencoded"})).status_code == 413, "login body capped")
 
+        print("== autocomplete and voice")
+        lst = (await c.get("/api/chats")).json()
+        names = [x["name"] for x in lst["commands"]]
+        check({"panel", "claude", "remind", "help"} <= set(names) and all(x["desc"] for x in lst["commands"]),
+              f"command list for autocomplete ({len(names)})")
+        check(all(f"/{n}" in W.HELP for n in names), "/help lists the same commands")
+        heard = []
+
+        async def fake_transcribe(data):
+            heard.append(data)
+            return " remind me to call mom ", 2.0
+        real, B.transcribe = B.transcribe, fake_transcribe
+        r = (await c.post("/api/transcribe", files={"audio": ("voice.webm", b"OGGfake", "audio/webm")})).json()
+        check(r == {"text": "remind me to call mom", "seconds": 2.0} and heard == [b"OGGfake"], f"transcribe: {r}")
+        check("error" in (await c.post("/api/transcribe", files={"x": ("a", b"", "text/plain")})).json(), "no audio -> error")
+        B.VOICE_ENABLED = False
+        check("off" in (await c.post("/api/transcribe", files={"audio": ("v.webm", b"x", "audio/webm")})).json()["error"],
+              "VOICE_ENABLED=false -> refused")
+        B.VOICE_ENABLED, B.transcribe = True, real
+
+        print("== https (for the microphone)")
+        B.DASHBOARD_NAME, B.DASHBOARD_HOST = "llmbot", "0.0.0.0"
+        ctx = D.tls_context()
+        from cryptography import x509
+        cert = x509.load_pem_x509_certificate((B.DATA_DIR / "dashboard-cert.pem").read_bytes())
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        check("llmbot.local" in san.get_values_for_type(x509.DNSName)
+              and any(str(i) == "127.0.0.1" for i in san.get_values_for_type(x509.IPAddress)), "self-signed cert covers llmbot.local and the IPs")
+        mtime = (B.DATA_DIR / "dashboard-cert.pem").stat().st_mtime
+        D.tls_context()
+        check((B.DATA_DIR / "dashboard-cert.pem").stat().st_mtime == mtime, "reused on the next start")
+        s2 = web.TCPSite(runner, "127.0.0.1", 0, ssl_context=ctx)
+        await s2.start()
+        port2 = s2._server.sockets[0].getsockname()[1]
+        async with httpx.AsyncClient(verify=False, cookies={D.COOKIE: D._key}) as sc:
+            r = await sc.get(f"https://127.0.0.1:{port2}/api/chats")
+        check(r.status_code == 200, "dashboard served over https, same cookie")
+        B.DASHBOARD_HOST = "127.0.0.1"
+
         print("== restart")
         await asyncio.sleep(2.2)  # the debounced save
         fe2 = W.WebFrontend(B)
