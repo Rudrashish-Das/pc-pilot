@@ -150,6 +150,36 @@ async def local():
     check(B.get_settings(42)["cc_session"] is None, "backend change resets session")
     B.update_settings(42, cc_session="s2"); B.update_settings(42, cc_perm="read")
     check(B.get_settings(42)["cc_session"] == "s2", "perm change keeps session")
+
+    print("== small local models: stopped early, small window, memory of runs")
+    oj = B.CCJob(channel=None, task="Create Rudrashish_Das.txt", snap=B.CCSnap("ollama", "qwen3.5:9b", "full", "default"),
+                 user_id=1)
+    promise = "I'll create a simple, readable text file with the requested information in the workspace directory."
+    check(B.stalled(oj, promise), "announced a step, no tool call: stalled")
+    check(not B.stalled(oj, "Created the file. Let me know if you need anything else."), "sign-off is not a stall")
+    check(not B.stalled(oj, "Done, I'll remind you at 9.\n[[remind: 09:00 | stretch]]"), "marker reply is not a stall")
+    oj.parser.tool_calls = 1
+    check(not B.stalled(oj, promise), "a run that used tools is not a stall")
+    oj.parser.tool_calls = 0
+    aj = B.CCJob(channel=None, task="t", snap=B.CCSnap("anthropic", "sonnet", "full", "default"), user_id=1)
+    check(not B.stalled(aj, promise), "Anthropic models aren't checked")
+    oj.parser.first_context, oj.ctx_limit = 26452, 32768
+    check("OLLAMA_CONTEXT_LENGTH" in (B.small_window_note(oj) or "") and "26k of 32k" in B.small_window_note(oj),
+          "warns when setup fills most of the window")
+    oj.ctx_limit = 65536
+    check(B.small_window_note(oj) is None, "no warning with room left")
+    oj.snap, oj.ctx_limit = B.CCSnap("ollama", "qwen3.5:9b", "full", "default", resume="abc"), 32768
+    check(B.small_window_note(oj) is None, "warns once per session, not on every message")
+
+    class Ch: id = 77
+    oj.channel, oj.parser.result = Ch(), {"result": promise}
+    B._history.pop(77, None)
+    B.update_settings(77, engine="claude"); B.remember_cc(oj, promise)
+    check(77 not in B._history, "Claude Code engine: local memory untouched")
+    B.update_settings(77, engine="auto"); B.remember_cc(oj, promise)
+    h = B._history.get(77) or []
+    check(len(h) == 2 and "Rudrashish_Das.txt" in h[0]["content"] and h[1]["content"].startswith("[Claude Code: success, no tool calls]"),
+          "Auto engine: the run goes into the local model's memory")
     B.scheduler.shutdown(wait=False)
 
 asyncio.run(local())

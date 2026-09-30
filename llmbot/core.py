@@ -1459,8 +1459,9 @@ async def run_local(prompt: str, model: str, ctx: ToolCtx, history: list[dict] |
     ctx.model = ctx.model or model
     extra = ""
     if "propose_claude_code" in ctx.tools:
-        extra = ("\nIf the request needs the user's computer (files, code, running commands), call "
-                 "propose_claude_code instead of guessing.")
+        extra = ("\nYou can't touch the user's computer yourself, but Claude Code can: if the request needs it (files, "
+                 "code, running commands), call propose_claude_code instead of saying you can't or guessing. Messages "
+                 "starting with [Claude Code ...] in this chat are runs that already happened, with their results.")
     sent = stamped(prompt)
     messages = [{"role": "system", "content": system_prompt(extra)}, *(history or []), {"role": "user", "content": sent}]
     tools = [TOOL_DEFS[t] for t in ctx.tools]
@@ -2120,6 +2121,8 @@ class StreamParser:
         self._pending: dict[str, tuple[str, dict]] = {}
         self.actions: list[tuple[str, dict]] = []  # successful mcp__bot__ action tool calls (set_reminder, …)
         self.api_calls: set[str] = set()  # distinct model requests this run (assistant message ids)
+        self.tool_calls = 0  # tool_use blocks this run (0 + "I'll do X" = a small model that stopped early)
+        self.first_context: int | None = None  # the first request's prompt: fixed instructions + history + task
         self.rate_limit: dict | None = None  # the latest plan-usage report (rate_limit_event), see note_plan
 
     def feed_line(self, raw: str) -> list[str]:
@@ -2163,6 +2166,8 @@ class StreamParser:
             if u:
                 self.context_tokens = (int(u.get("input_tokens") or 0) + int(u.get("cache_read_input_tokens") or 0)
                                        + int(u.get("cache_creation_input_tokens") or 0) + int(u.get("output_tokens") or 0))
+                if self.first_context is None:
+                    self.first_context = self.context_tokens
             for b in (ev.get("message") or {}).get("content") or []:
                 if not isinstance(b, dict):
                     continue
@@ -2171,6 +2176,7 @@ class StreamParser:
                     self.transcript.append(f"[assistant]\n{text}")
                     out.append(f"💬 {oneline(text, 180)}")
                 elif b.get("type") == "tool_use":
+                    self.tool_calls += 1
                     short = str(b.get("name", "")).removeprefix("mcp__bot__")
                     if short in ACTION_TOOLS and isinstance(b.get("input"), dict):
                         self._pending[b.get("id", "")] = (short, b["input"])
@@ -2677,6 +2683,42 @@ def unbacked_claims(asked: str, reply: str, raw: str) -> list[str]:
     return out
 
 
+# The last sentence announces a step ("I'll create the file.") that never came. "Let me know..." is a sign-off, not a step.
+STALL_RE = re.compile(r"(?:^|[.!?]\s+)(?:(?:ok(?:ay)?|sure|now|first|next|alright),?\s+)?(?:i'?ll|i will|i'?m going to|"
+                      r"i am going to|let me(?! know))\b[^.!?]*[.!?:…]?\s*$", re.I)
+
+
+def stalled(job: CCJob, text: str) -> bool:
+    """Small local models (seen with qwen3.5:9b) sometimes end a run by announcing what they will do, without calling
+    a tool: Claude Code reports that as a success. Anthropic models don't do this, and a sign-off must not trip it."""
+    last = text.strip().split("\n\n")[-1].strip()
+    markers = (REMIND_RE, TASK_RE, DELETE_RE, ATTACH_RE, skills_mod.SKILL_RE)  # "I'll remind you at 9" + [[remind:]]
+    return (job.snap.backend != "anthropic" and not job.snap.compact and job.parser.tool_calls == 0
+            and not job.parser.actions and not any(rx.search(text) for rx in markers)
+            and bool(last) and STALL_RE.search(last) is not None)
+
+
+def small_window_note(job: CCJob) -> str | None:
+    """Once per session: Claude Code's fixed instructions alone can fill most of a local model's window (~26k of 32k on
+    qwen3.5:9b), and then it has no room to work. Ollama drops the start of a prompt that doesn't fit, silently."""
+    first, lim = job.parser.first_context, job.ctx_limit
+    if job.snap.backend == "anthropic" or job.snap.resume or not first or not lim or first < lim * 0.6:
+        return None
+    return (f"⚠️ small context window: Claude Code's setup took {first / 1000:.0f}k of {lim // 1024}k, leaving little "
+            "room to work. Raise OLLAMA_CONTEXT_LENGTH (65536 or more) and restart Ollama")
+
+
+def remember_cc(job: CCJob, reply: str) -> None:
+    """Put a finished Claude Code run into the local model's chat memory. Otherwise, in Auto mode, the local model never
+    learns that the run it proposed happened, and goes on to tell the user it can't touch files."""
+    ch_id = getattr(job.channel, "id", 0)
+    if job.scheduled or job.snap.compact or get_settings(ch_id)["engine"] not in ("auto", "local"):
+        return
+    did = f"{job.parser.tool_calls} tool call(s)" if job.parser.tool_calls else "no tool calls"
+    remember(ch_id, stamped(f"[Claude Code ran this task on my computer, as I approved]\n{clip(job.task, 1500)}"),
+             f"[Claude Code: {job.outcome()}, {did}]\n{clip(reply, 1500) or '(no reply)'}")
+
+
 async def _finalize(job: CCJob) -> None:
     record_cost(job)
     # Context = the last request's prompt (Ollama's count matches its own log: ~4.4-5.3k on qwen3.5:9b).
@@ -2688,6 +2730,10 @@ async def _finalize(job: CCJob) -> None:
     if r0 and job.parser.actions:
         text = r0["result"] = f"{text}\n{action_markers(job.parser.actions)}".strip()
     raw = text
+    if r0 and job.outcome() == "success" and stalled(job, text):
+        job.error = "⚠️ Not done: it said what it would do, then stopped without doing anything."
+    if note := small_window_note(job):
+        job.notices.append(note)
     if r0 and job.outcome() == "success" and skills_mod.SKILL_RE.search(text):
         text, lines = skills_mod.extract(text, allowed=SKILLS_ENABLED and not job.scheduled,
                                          channel_id=getattr(job.channel, "id", 0), user_id=job.user_id, redact=redact)
@@ -2727,6 +2773,7 @@ async def _finalize(job: CCJob) -> None:
                         cc_session_setup=CC_SETUP_FINGERPRINT, cc_session_ctx=job.parser.context_tokens,
                         cc_session_ctx_limit=job.ctx_limit)
     r = job.parser.result or {}
+    remember_cc(job, redact(r.get("result") or job.error or ""))
     this = f"${job.cost_this:.4f}" if job.cost_this is not None else "unknown"
     log.info("CC job %s: %s, %s turns, this message %s, session total $%.4f, context %s tokens",
              job.id, job.outcome(), r.get("num_turns"), this, job.cost_session or 0, job.parser.context_tokens)

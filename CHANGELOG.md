@@ -3,6 +3,10 @@
 Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `bot_v22.py`). From 0.23.0 on, git history is the record.
 
 ## Unreleased
+- Claude Code on a small local model (seen with qwen3.5:9b):
+  - A run that ends by announcing a step ("I'll create the file.") without calling any tool now shows as ⚠️ **Not done** (an error), not a success.
+  - The first message of a session warns when Claude Code's setup fills most of the model's context window (~26k of 32k), with the fix: raise `OLLAMA_CONTEXT_LENGTH` to 65536 or more.
+- ✨ **Auto** engine: finished Claude Code runs go into the local model's chat memory, and it's told that Claude Code can do what it can't. Before, it forgot the run it had just proposed and went on telling the user it had no file access.
 - Slash commands work in DMs with the bot when `GUILD_ID` is set: global copies limited to DMs (Discord command contexts), so servers still get their instant per-server copies without seeing each command twice.
 - `GUILD_ID=all`: slash commands in every server the bot is in, and in servers it joins later, instantly. Before, a server missing from `GUILD_ID` had no slash commands at all.
 - Plan limits show the clock time they reset, not only how long until then: "resets at 14:30 (in 1 hour)", "on Sunday, 4 Oct, 14:30 (in 3 days)".
