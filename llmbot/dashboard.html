@@ -381,7 +381,7 @@ function eventItem(e) {
   const el = h("div", { class: "item", "data-expand": expandable ? "1" : null },
     h("div", { class: "head" }, h("span", {}, k.icon + " " + k.label), statusBadge(e),
       e.who ? h("span", {}, e.who) : null, e.where ? h("span", {}, "· " + e.where) : null,
-      h("span", { class: "t", title: new Date(e.ts * 1000).toLocaleString() }, clock(e.ts))),
+      h("span", { class: "t", title: new Date(at(e) * 1000).toLocaleString() }, clock(at(e)))),
     h("div", { class: "body" + (expandable ? " clip" : "") }, e.text || ""),
     bits.length ? h("div", { class: "small muted", style: "margin-top:3px" }, bits.join(" · ")) : null,
     more.length ? h("div", { class: "more" }, more) : null);
@@ -397,13 +397,18 @@ async function getJSON(url) {
   return r.json();
 }
 
+// When it happened: a reply is logged when it finishes but belongs where the request came in (started), so what it
+// did along the way (a task scheduled, a reminder set) shows after the request, not before it.
+const at = (e) => e.started || e.ts;
+
 function mergeEvents(list) {
   const seen = new Set(S.events.map((e) => e.id));
   for (const e of list) if (!seen.has(e.id)) S.events.push(e);
-  S.events.sort((a, b) => b.id - a.id);
+  S.events.sort((a, b) => at(b) - at(a) || b.id - a.id);
   if (S.events.length) {
-    S.lastId = Math.max(S.lastId, S.events[0].id);
-    S.oldestId = S.events[S.events.length - 1].id;
+    const ids = S.events.map((e) => e.id);  // ids stay in logging order: polling and paging go by them
+    S.lastId = Math.max(S.lastId, ...ids);
+    S.oldestId = Math.min(...ids);
   }
 }
 
@@ -553,7 +558,7 @@ function renderFeed() {
   const out = [];
   let day = null, group = null;
   for (const e of list) {
-    const d = dayLabel(e.ts);
+    const d = dayLabel(at(e));
     if (d !== day) { day = d; out.push(h("div", { class: "day" }, d)); group = h("div", { class: "list" }); out.push(group); }
     group.append(eventItem(e));
   }

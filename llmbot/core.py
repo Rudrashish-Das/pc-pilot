@@ -2098,6 +2098,7 @@ class CCJob:
     reminders_ok: bool = False  # a scheduled job whose task may set reminders
     ctx_limit: int | None = None  # the model's real context window (Ollama), when known
     ctx_approx: bool = False  # context_tokens is an estimate
+    asked_at: float = field(default_factory=time.time)  # wall clock: where its activity-feed entry belongs
 
     def elapsed(self) -> int:
         if not self.started:
@@ -2411,7 +2412,7 @@ async def _finalize(job: CCJob) -> None:
                user_id=job.user_id, status=job.outcome(), job=job.id, backend=job.snap.backend, model=job.snap.model,
                perm=job.snap.perm, scheduled=job.scheduled or None, turns=r.get("num_turns"), cost=job.cost_this,
                seconds=job.elapsed(), context=job.parser.context_tokens, error=job.error,
-               reply=clip(r.get("result") or "", 600) or None, notices=job.notices or None)
+               reply=clip(r.get("result") or "", 600) or None, notices=job.notices or None, started=job.asked_at)
     posted =await (_send_chat_reply(job) if job.chat else _send_result_card(job))
     if deletes and not posted:  # never delete a file the user didn't receive
         log.warning("Reply for job %s not posted; skipped deleting %d file(s)", job.id, len(deletes))
@@ -2874,13 +2875,13 @@ async def answer_local(channel, user_id: int, prompt: str, out: Out, *, model: s
     model = model or get_settings(ch_id)["local_model"]
     tools = CHAT_TOOLS + (["propose_claude_code"] if allow_propose and CC_ENABLED and is_owner(user_id) else [])
     ctx = ToolCtx(ch_id, user_id, tools)
-    started = time.monotonic()
+    started, asked_at = time.monotonic(), time.time()
     try:
         with activity("local", prompt, ch_id, user_id, model=model):
             res = await run_local(prompt, model, ctx, list(_history.get(ch_id, [])) if use_history else None)
     except httpx.HTTPError as e:
         note_event("local", prompt, level="error", channel_id=ch_id, user_id=user_id, model=model,
-                   error=f"could not reach the local model ({type(e).__name__})")
+                   error=f"could not reach the local model ({type(e).__name__})", started=asked_at)
         await out(content=with_hint(f"⚠️ Could not reach the local model ({type(e).__name__}).", str(e),
                                     where="local", model=model))
         return
@@ -2891,7 +2892,8 @@ async def answer_local(channel, user_id: int, prompt: str, out: Out, *, model: s
         return
     text = redact(res.text) or "_(empty reply)_"
     note_event("local", prompt, channel_id=ch_id, user_id=user_id, model=model,
-               seconds=round(time.monotonic() - started, 1), tools=res.tools_used or None, reply=clip(text, 600))
+               seconds=round(time.monotonic() - started, 1), tools=res.tools_used or None, reply=clip(text, 600),
+               started=asked_at)
     if use_history:
         remember(ch_id, res.sent or prompt, text)
     chat = get_settings(ch_id)["style"] == "chat"
@@ -3085,14 +3087,14 @@ async def run_scheduled_task(task_id: str) -> None:
         model = task["model"]
     tools = READONLY_TOOLS + (["set_reminder", "list_reminders"] if reminders_ok else [])  # never schedule_task
     ctx = ToolCtx(task["channel_id"], task["created_by"], tools)
-    started = time.monotonic()
+    started, asked_at = time.monotonic(), time.time()
     try:
         with activity("task", task["description"], task["channel_id"], uid, model=model):
             res = await run_local(task["prompt"], model, ctx, None)
         text = res.text or "_(empty reply)_"
         note_event("task", task["description"], channel_id=task["channel_id"], user_id=uid, status="ran",
                    ref=task_id, engine="local", model=model, seconds=round(time.monotonic() - started, 1),
-                   tools=res.tools_used or None, reply=clip(strip_think(text), 600))
+                   tools=res.tools_used or None, reply=clip(strip_think(text), 600), started=asked_at)
         if ctx.reminders:
             text += "\n" + "\n".join(ctx.reminders)
         if res.tools_used:
