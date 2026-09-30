@@ -4191,11 +4191,10 @@ def power_supported() -> bool:
 def startup_installed() -> bool:
     """Whether scripts/bot_control.ps1 install added the bot to Startup apps (it starts when someone signs in)."""
     appdata = os.getenv("APPDATA")
-    folder = Path(appdata or ".") / "Microsoft/Windows/Start Menu/Programs/Startup"
-    return bool(appdata) and any((folder / n).exists() for n in ("pc-pilot.lnk", "Discord LLM Bot.lnk"))  # new, old
+    return bool(appdata) and (Path(appdata) / "Microsoft/Windows/Start Menu/Programs/Startup/pc-pilot.lnk").exists()
 
 
-BOOT_TASKS = ("pc-pilot (boot)", "Discord LLM Bot (boot)")  # what scripts/bot_control.ps1 boot registers (new, old)
+BOOT_TASK = "pc-pilot (boot)"  # the scheduled task scripts/bot_control.ps1 boot registers
 _autostart_cache: tuple[float, str | None] = (-1e9, None)
 
 
@@ -4206,13 +4205,12 @@ def autostart() -> str | None:
     if time.monotonic() - _autostart_cache[0] < 60:
         return _autostart_cache[1]
     mode = None
-    for task in BOOT_TASKS if sys.platform == "win32" else ():
+    if sys.platform == "win32":
         try:
-            r = subprocess.run(["schtasks", "/query", "/tn", task, "/fo", "csv", "/nh"], capture_output=True,
+            r = subprocess.run(["schtasks", "/query", "/tn", BOOT_TASK, "/fo", "csv", "/nh"], capture_output=True,
                                text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
             if r.returncode == 0 and "Disabled" not in r.stdout:
                 mode = "boot"
-                break
         except (OSError, subprocess.TimeoutExpired):
             pass
     if mode is None and startup_installed():

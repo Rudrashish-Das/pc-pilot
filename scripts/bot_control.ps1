@@ -17,11 +17,9 @@ param([Parameter(Position = 0)][ValidateSet("install", "remove", "boot", "unboot
 $Dir      = Split-Path $PSScriptRoot -Parent  # the repo root
 $Pythonw  = Join-Path $Dir ".venv\Scripts\pythonw.exe"
 $Shortcut = Join-Path ([Environment]::GetFolderPath("Startup")) "pc-pilot.lnk"
-$OldShortcut = Join-Path ([Environment]::GetFolderPath("Startup")) "Discord LLM Bot.lnk"  # before the rename to pc-pilot
 $LogFile  = Join-Path $Dir "data\bot.log"
 $Launcher = Join-Path $Dir "bin\pc-pilot.exe"  # built from scripts\launcher.cs so Startup apps shows our name and logo
 $BootTask = "pc-pilot (boot)"  # llmbot/core.py BOOT_TASK looks for this name
-$OldBootTask = "Discord LLM Bot (boot)"  # before the rename
 
 function Test-Admin {
     ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
@@ -98,14 +96,11 @@ switch ($Action) {
         $lnk.WorkingDirectory = $Dir
         $lnk.Description = "pc-pilot"
         $lnk.Save()
-        # the entry and launcher from before the rename to pc-pilot
-        Remove-Item $OldShortcut, (Join-Path $Dir "bin\DiscordLLMBot.exe") -ErrorAction SilentlyContinue
         "Added to Startup apps: $Shortcut"
         "Enable/disable it in Task Manager > Startup apps (listed as '$name')."
     }
     "remove" {
-        $found = @($Shortcut, $OldShortcut) | Where-Object { Test-Path $_ }
-        if ($found) { Remove-Item $found; "Removed from Startup apps." } else { "Not in Startup apps." }
+        if (Test-Path $Shortcut) { Remove-Item $Shortcut; "Removed from Startup apps." } else { "Not in Startup apps." }
     }
     "boot" {
         if (-not (Test-Admin)) { Write-Error "Run PowerShell as administrator for this one."; exit 1 }
@@ -120,16 +115,14 @@ switch ($Action) {
         Register-ScheduledTask -TaskName $BootTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings `
             -Description "Starts pc-pilot at boot, before anyone signs in. Made by scripts\bot_control.ps1 boot." `
             -Force | Out-Null
-        Get-ScheduledTask -TaskName $OldBootTask -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
         "The bot now starts when Windows boots, as $user, with no sign-in needed. It also starts Ollama if it isn't running."
         "Keep the Startup apps entry too: if the bot is already running at sign-in, it does nothing."
         "Undo with: .\scripts\bot_control.ps1 unboot (as administrator)"
     }
     "unboot" {
-        $tasks = @($BootTask, $OldBootTask) | ForEach-Object { Get-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue }
-        if (-not $tasks) { "Not set to start at boot."; return }
+        if (-not (Get-ScheduledTask -TaskName $BootTask -ErrorAction SilentlyContinue)) { "Not set to start at boot."; return }
         if (-not (Test-Admin)) { Write-Error "Run PowerShell as administrator for this one."; exit 1 }
-        $tasks | Unregister-ScheduledTask -Confirm:$false
+        Unregister-ScheduledTask -TaskName $BootTask -Confirm:$false
         "Removed: the bot no longer starts at boot (Startup apps still starts it when you sign in, if installed)."
     }
     "start" { Start-Bot }
