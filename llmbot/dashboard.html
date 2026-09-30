@@ -7,6 +7,10 @@
 <meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
 <title>Bot dashboard</title>
+<script>
+// Apply the saved theme before first paint so the page doesn't flash the wrong colours.
+try { const t = localStorage.getItem("theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 <link rel="icon" type="image/png" href="/favicon.png">
 <link rel="apple-touch-icon" href="/logo.png">
 <style>
@@ -16,12 +20,21 @@
   --ok-bg: #e6f6ed; --warn-bg: #fdf3e1; --err-bg: #fde8e8; --run-bg: #e7effd;
   --mono: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace;
 }
+/* Theme: follows the system unless the viewer picked Light or Dark (html[data-theme], saved per browser). */
+:root[data-theme="light"] { color-scheme: light; }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0f1115; --card: #171a21; --text: #e7e9ee; --muted: #9098a6; --line: #262a34; --chip: #222631;
     --accent: #8891ff; --ok: #43c47f; --warn: #e3a64a; --err: #ff6b6f; --run: #6ea1ff;
     --ok-bg: #16281f; --warn-bg: #2d2415; --err-bg: #331a1c; --run-bg: #17223a;
+    color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+    --bg: #0f1115; --card: #171a21; --text: #e7e9ee; --muted: #9098a6; --line: #262a34; --chip: #222631;
+    --accent: #8891ff; --ok: #43c47f; --warn: #e3a64a; --err: #ff6b6f; --run: #6ea1ff;
+    --ok-bg: #16281f; --warn-bg: #2d2415; --err-bg: #331a1c; --run-bg: #17223a;
+    color-scheme: dark;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text); }
@@ -33,6 +46,9 @@ header { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, va
 .title h1 { font-size: 17px; margin: 0; font-weight: 650; }
 .title .logo { width: 30px; height: 30px; flex: none; display: block; }
 .title .sub { color: var(--muted); font-size: 13px; margin-left: auto; text-align: right; }
+.themebtn { font: inherit; font-size: 15px; line-height: 1; border: 1px solid var(--line); background: var(--card); color: var(--text);
+  border-radius: 9px; padding: 6px 8px; cursor: pointer; flex: none; }
+.themebtn:hover { border-color: var(--muted); }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
 .dot.ok { background: var(--ok); } .dot.err { background: var(--err); } .dot.run { background: var(--run); animation: pulse 1.4s infinite; }
 @keyframes pulse { 50% { opacity: .35; } }
@@ -230,7 +246,7 @@ dialog .row { justify-content: flex-end; }
 <body>
 <header>
   <div class="bar">
-    <div class="title"><img class="logo" src="/logo.png" alt=""><h1>Bot dashboard</h1><span class="dot" id="dot"></span><span class="sub" id="sub">loading…</span></div>
+    <div class="title"><img class="logo" src="/logo.png" alt=""><h1>Bot dashboard</h1><span class="dot" id="dot"></span><span class="sub" id="sub">loading…</span><button class="themebtn" id="theme" type="button"></button></div>
     <nav id="tabs">
       <button data-tab="chat" id="tab-chat">Chat</button>
       <button data-tab="now" class="on">Now</button>
@@ -1137,6 +1153,23 @@ async function tick() {
 }
 function start() { tick(); }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { start(); if (S.tab === "chat") pollChat(); } });
+// Theme: System -> Light -> Dark, remembered per browser.
+const THEMES = { system: ["🖥️", "System"], light: ["☀️", "Light"], dark: ["🌙", "Dark"] };
+const BAR = { light: "#f6f7f9", dark: "#0f1115" };
+function setTheme(t, keep) {
+  if (!THEMES[t]) t = "system";
+  if (t === "system") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+  for (const m of document.querySelectorAll('meta[name="theme-color"]'))
+    m.content = t === "system" ? BAR[m.media.includes("dark") ? "dark" : "light"] : BAR[t];
+  const b = $("theme"), next = { system: "light", light: "dark", dark: "system" }[t];
+  b.textContent = THEMES[t][0];
+  b.title = `Theme: ${THEMES[t][1]} (click for ${THEMES[next][1]})`;
+  b.setAttribute("aria-label", b.title);
+  b.dataset.theme = t;
+  if (keep) try { t === "system" ? localStorage.removeItem("theme") : localStorage.setItem("theme", t); } catch (e) {}
+}
+$("theme").addEventListener("click", () => setTheme({ system: "light", light: "dark", dark: "system" }[$("theme").dataset.theme], true));
+setTheme(document.documentElement.dataset.theme || "system");
 let saved = "now";
 try { saved = localStorage.getItem("tab") || "now"; } catch (e) {}
 sizeChat();

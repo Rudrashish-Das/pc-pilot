@@ -3,6 +3,7 @@
 Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `bot_v22.py`). From 0.23.0 on, git history is the record.
 
 ## Unreleased
+- Dashboard theme button next to the status line: 🖥️ System (follows the phone or PC), ☀️ Light, 🌙 Dark. Tap to cycle; each browser remembers its choice.
 - Chat from the dashboard: a **Chat** tab talks to the bot over your Wi-Fi, a third front end next to Discord and Telegram on the same backend. It works without internet (local model, Claude Code on Ollama, reminders). Several chats, each with its own engine, model and session; `/panel` and the other menus and buttons work in the page; file attachments both ways; Claude Code's steps shown live. `DASHBOARD_CHAT` = owner (default: the access key holder is an owner) / user (local model only) / off.
 - Dashboard chat: `/` autocompletes commands (with what each does), and 🎙️ voice input turns speech into text with the PC's Whisper, into the message box to check before sending. The dashboard is also served over https (`DASHBOARD_HTTPS_PORT`, default 8766, self-signed certificate in `data/`), because phones only allow the microphone on https; `bot_control.ps1 firewall` opens that port too. New dependency: `cryptography`.
 - With the dashboard chat on, the bot starts without internet: no more waiting for discord.com, or exiting after 5 minutes. Discord and Telegram keep retrying in the background.
