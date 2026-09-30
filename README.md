@@ -147,6 +147,7 @@ setx OLLAMA_CONTEXT_LENGTH 32768
   LLM_MODEL=qwen3.5:9b
   ```
 - Pick a model that fits your GPU. `qwen3.5:9b` needs about 8 GB of VRAM with a 32k context; on less, try a 4b model. `ollama ps` shows whether it runs **100% GPU**. A CPU/GPU split works, but it's slower.
+- Optional, to fit more of the model on the GPU: [docs/SETUP.md](docs/SETUP.md#ollama-tuning-optional) (flash attention and a smaller KV cache). `ollama stop qwen3.5:9b` unloads the model by hand.
 - Any other OpenAI-compatible server works as well: point `LLM_URL` at its `/v1` URL.
 
 ### 6. Claude Code engine (optional)
@@ -248,7 +249,7 @@ Voice notes, images and files work on both. See [docs/SETUP.md](docs/SETUP.md) f
 | "Missing Access" in a private channel | Add the bot to the channel: Edit Channel → Permissions. `/panel` warns you about this. |
 | Telegram answers nothing | Your id must be in `TELEGRAM_ALLOWED_USER_IDS` (send `/start` to get it), then restart. |
 | The Claude Code engine is missing | You're not an owner: set `OWNER_IDS` (with no owners at all, Claude Code is off). Or `claude` isn't found: set `CLAUDE_BIN`. |
-| The local model is slow | Run `ollama ps`. If it isn't 100% GPU, use a smaller model or context. |
+| The local model is slow | Run `ollama ps`. If it isn't 100% GPU, try the [Ollama tuning](docs/SETUP.md#ollama-tuning-optional) settings, or use a smaller model or context. |
 | "Another copy of the bot is already running" | Run `.\scripts\bot_control.ps1 stop` first. |
 | Anything else | Check `data\bot.log`, or run `.\scripts\bot_control.ps1 log`. |
 

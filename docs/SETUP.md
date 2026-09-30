@@ -138,6 +138,19 @@ Owners only, on Windows. `/power` offers five actions:
   setx OLLAMA_KEEP_ALIVE 30m
   ```
   Restart Ollama afterwards.
+- Outside the bot, `ollama ps` lists loaded models and `ollama stop <model>` unloads one right away.
+
+## Ollama tuning (optional)
+These are Ollama settings, not bot settings, so they go in Windows environment variables, not `.env`. Ollama is a separate program and reads them only when it starts.
+```powershell
+setx OLLAMA_FLASH_ATTENTION 1
+setx OLLAMA_KV_CACHE_TYPE q8_0
+```
+Then quit Ollama from the system tray and start it again. Its log (`%LOCALAPPDATA%\Ollama\server.log`) should show `OLLAMA_FLASH_ATTENTION:true` and `OLLAMA_KV_CACHE_TYPE:q8_0`.
+
+- **What they do:** the KV cache is the model's working memory for the prompt, and it grows with the context window. Flash attention computes attention with less memory, and usually faster. `q8_0` stores the KV cache at half size, and it only works with flash attention on. Together they leave more room on the GPU, so less of the model runs on the slower CPU.
+- **Measured** with qwen3.5:9b, 32k context, on an 8 GB laptop GPU: 7.24 → 6.82 GB in total, CPU share 1.7 → 1.3 GB, reading a 3.9k-token prompt 3.0 → 2.7s. Tool use was unchanged. Models whose KV cache is a bigger share of their memory gain more.
+- **Downsides:** both apply to every model Ollama runs. `q8_0` has a small quality cost, most likely to show in long chats; `q4_0` saves more but can hurt answers. On a few GPU and model combinations flash attention has caused garbled output. To undo either one, delete the variable and restart Ollama.
 
 ## Notes
 - **Workspaces:** Claude Code can only run inside folders listed in `WORKSPACES`. Don't whitelist this bot's own folder, because its `.env` holds your Discord token. The bot removes its own secrets from Claude Code's environment, but it can't hide files on disk.
