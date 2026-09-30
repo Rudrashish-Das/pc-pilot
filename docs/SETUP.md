@@ -113,6 +113,22 @@ Ask for something that has to be looked up or done later, and Claude Code schedu
 - `/tasks` lists and cancels them (🤖 = Claude Code, 💻 = local model). `/schedule` creates a repeating one directly and uses the channel's engine.
 - Every message to Claude Code starts with the current date and time in `TIMEZONE`, so "today", "tonight" and "8am" mean your time, not UTC.
 
+## Laptop power (`/power`)
+
+Owners only, on Windows. `/power` offers five actions:
+- **🔒 Lock:** immediate. Everything keeps running.
+- **😴 Sleep**, **🛌 Hibernate**, **🔁 Restart** and **🔌 Shut down:** each asks you to confirm first.
+
+- **Restart and shut down** wait 30 seconds, like `shutdown /t 30`. Open `/power` again and press ✖️ **Cancel** to stop it.
+- **Back-up notice:** the bot posts in the chat where you asked, and pings only you, when it's up again:
+  - after sleep or hibernate, as soon as the laptop wakes and the network is back;
+  - after a restart, once Windows has started, you've signed in, and the bot has started.
+
+  For the restart case the bot has to be in Startup apps (`.\scripts\bot_control.ps1 install`). `/power` warns you if it isn't.
+- **Turning the laptop on** isn't possible from chat, because nothing is running to receive the message. The same goes for waking it from sleep: someone has to open the lid or press a key or the power button.
+- **If a requested action never happened**, for example a restart that was cancelled on the laptop itself, the bot says so after a few minutes.
+- **It's never a model tool:** neither the local model nor Claude Code can trigger it. Only the `/power` buttons can, after the owner check.
+
 ## Model memory
 - A model loads only when the first message or scheduled run needs it. Starting the bot and opening `/panel` don't load one.
 - After `LLM_IDLE_UNLOAD` seconds idle (default 600), the bot unloads the models it used, so your GPU is free for other things. `/unload` does it immediately, and `/panel` shows 🧠 loaded or 💤 not in memory.
@@ -129,7 +145,18 @@ Ask for something that has to be looked up or done later, and Claude Code schedu
   - `read` and `edit` deny anything outside their allow-list without prompting. Blocked actions appear on the result card.
   - `full` uses `bypassPermissions` and always asks for confirmation before running.
 - **Cron:** schedules use 5 fields in `TIMEZONE`, with standard numbering (0 = Sunday). For example, `0 9 * * 1-5` runs at 09:00 on weekdays. Tasks must be at least 15 minutes apart, with a maximum of 20.
-- **Files the bot creates:** all in `data/` (not in git): `settings.json` (per-channel settings), `tasks.json` (scheduled tasks), `reminders.json` (pending reminders), `usage.json` (daily spend), `mcp_web.json` and `bot.log`. They survive restarts and updates; copy the folder along if you move the bot to another machine. `LLMBOT_DATA_DIR` puts it somewhere else.
+- **Where the bot keeps things:** by default, files in `data/` (not in git). That covers:
+  - `settings.json` (per-channel settings), `tasks.json`, `reminders.json`, `usage.json` (daily spend);
+  - `history.json` (the local model's chat memory, so it survives restarts; `/reset` clears it);
+  - `jobs.jsonl` (one line per Claude Code job: model, cost, turns, context, outcome);
+  - `mcp_web.json` and `bot.log`.
+
+  They survive restarts and updates. Copy the folder along if you move the bot to another machine. `LLMBOT_DATA_DIR` puts it somewhere else.
+- **Postgres instead of files (optional):** set `DATABASE_URL=postgresql://user:password@localhost:5432/llmbot` in `.env`. Create the database first (`createdb llmbot`, or in pgAdmin). On the next start:
+  - the bot creates two tables: `llmbot_state`, with one jsonb row per kind (settings, tasks, reminders, usage, history, the pending power action), and `llmbot_jobs`, with one row per Claude Code job;
+  - any `data/` files it finds are imported once and renamed to `*.imported`.
+
+  `mcp_web.json` and `bot.log` stay files. If the database isn't reachable within a minute of starting, the bot logs why and exits rather than silently falling back to files. `DATABASE_URL` is never passed to Claude Code. Example query: `select date(finished_at), sum(cost_usd) from llmbot_jobs group by 1 order by 1;`
 - **Private channels:** add the bot to the channel (Edit Channel → Permissions) with View Channel, Send Messages, Embed Links, Attach Files and Read Message History. Otherwise slash commands still arrive, but the bot can't post replies or cards. `/panel` warns you when this is the case.
 - **Running twice:** a second copy exits on its own (it holds localhost port 47823), so starting it manually while the startup copy is running won't cause duplicate replies.
 

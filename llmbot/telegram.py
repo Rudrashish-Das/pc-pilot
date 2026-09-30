@@ -54,6 +54,7 @@ COMMANDS = [
     ("reset", "Clear the local model's chat memory"),
     ("log", "Full log of the last Claude Code reply"),
     ("unload", "Free GPU memory now"),
+    ("power", "Lock, sleep, restart or shut down the laptop"),
     ("help", "How to use this bot"),
 ]
 
@@ -858,7 +859,7 @@ class Telegram:
                 "Runs with Claude Code, read-only, in a fresh session." if engine == "claude"
                 else "Runs on the local model with web search."))
         elif cmd == "reset":
-            core._history.pop(cid, None)
+            core.forget_history(cid)
             await out(content="🧹 Local chat history cleared.")
         elif cmd == "stop":
             if not core.is_owner(uid):
@@ -887,6 +888,14 @@ class Telegram:
                 return
             done = await core.unload_all()
             await out(content=f"💤 Unloaded: {', '.join(f'`{m}`' for m in done)}" if done else "💤 Nothing to unload.")
+        elif cmd == "power":
+            if not core.is_owner(uid):
+                await out(content="⛔ Only owners can control the laptop.")
+                return
+            if not core.power_supported():
+                await out(content="Power controls only work when the bot runs on Windows.")
+                return
+            await chan.send(embed=core.power_embed(), view=core.PowerView(cid))
         elif cmd == "cancel":
             await out(content="Nothing to cancel.")
         else:
@@ -909,6 +918,7 @@ class Telegram:
             "/remind <when> | <what>, or just ask (\"remind me to take my meds in 10 min\")",
             "Scheduled prompts: just ask (\"at 8am tell me the latest news on …\"); /schedule <cron> | <prompt>; /tasks lists and cancels",
             "/reset: clear the local model's memory · /unload: free GPU memory now",
+            "/power (owners): lock, sleep, hibernate, restart or shut down the laptop; I post here when I'm back",
             "📎 Photos and files: attach them to your message (Claude Code sees images and PDFs).",
             *(["🎙️ Voice notes: transcribed on the laptop and answered like a typed message."] if core.VOICE_ENABLED else []),
             "",

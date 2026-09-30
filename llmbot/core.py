@@ -39,6 +39,8 @@ from apscheduler.triggers.date import DateTrigger
 from discord import app_commands
 from dotenv import load_dotenv
 
+from llmbot import store as store_mod
+
 # =============================================================================
 # Config
 # =============================================================================
@@ -207,7 +209,7 @@ CC_SETUP_FINGERPRINT = hashlib.sha256(f"{CC_SYSTEM_APPEND}|{CC_EXTRAS}".encode()
 _SECRET_NAME = re.compile(r"(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|PASS|APIKEY|API_KEY|KEY|PRIVATE_KEY|CREDENTIALS?|AUTH|COOKIE)(_|$)", re.I)
 CC_ENV_KEEP_PREFIXES = ("ANTHROPIC_", "CLAUDE_")
 CC_ENV_PASSTHROUGH = {x.strip().upper() for x in _env("CC_ENV_PASSTHROUGH").split(",") if x.strip()}
-SCRUB_ENV = {"DISCORD_TOKEN", "TELEGRAM_BOT_TOKEN", "LLM_API_KEY", "CC_CUSTOM_TOKEN"} | {
+SCRUB_ENV = {"DISCORD_TOKEN", "TELEGRAM_BOT_TOKEN", "LLM_API_KEY", "CC_CUSTOM_TOKEN", "DATABASE_URL"} | {
     k for k in os.environ if _SECRET_NAME.search(k) and not k.upper().startswith(CC_ENV_KEEP_PREFIXES)
     and k.upper() not in CC_ENV_PASSTHROUGH}
 
@@ -332,7 +334,13 @@ def _read_json(path: Path, default: Any) -> Any:
         return default
 
 
-_settings: dict[str, dict] = _read_json(SETTINGS_FILE, {})
+# Bookkeeping lives in memory and is saved through STORE after each change: JSON files in data/ by default, or
+# Postgres when DATABASE_URL is set (llmbot/store.py). main() opens the configured store and loads everything.
+DATABASE_URL = _env("DATABASE_URL")
+HISTORY_FILE = DATA_DIR / "history.json"
+STORE: Any = store_mod.FileStore(DATA_DIR)
+
+_settings: dict[str, dict] = {}
 
 
 def default_settings() -> dict:
@@ -368,7 +376,7 @@ def update_settings(channel_id: int, **changes) -> dict:
         changes.setdefault("cc_session", None)  # session is tied to backend + workspace
     s.update(changes)
     _settings[str(channel_id)] = s
-    _atomic_write_json(SETTINGS_FILE, _settings)
+    STORE.save("settings", SETTINGS_FILE, _settings)
     return s
 
 
@@ -635,11 +643,11 @@ def validate_cron(expr: str) -> CronTrigger:
 
 
 scheduler = AsyncIOScheduler(timezone=TZ)
-_tasks: dict[str, dict] = {t["id"]: t for t in _read_json(TASKS_FILE, [])}
+_tasks: dict[str, dict] = {}
 
 
 def _save_tasks() -> None:
-    _atomic_write_json(TASKS_FILE, list(_tasks.values()))
+    STORE.save("tasks", TASKS_FILE, list(_tasks.values()))
 
 
 def _schedule_job(task: dict) -> None:
@@ -828,11 +836,11 @@ def parse_when(text: str, now: datetime | None = None) -> datetime:
     return dt
 
 
-_reminders: dict[str, dict] = {r["id"]: r for r in _read_json(REMINDERS_FILE, [])}
+_reminders: dict[str, dict] = {}
 
 
 def _save_reminders() -> None:
-    _atomic_write_json(REMINDERS_FILE, list(_reminders.values()))
+    STORE.save("reminders", REMINDERS_FILE, list(_reminders.values()))
 
 
 def _schedule_reminder(r: dict) -> None:
@@ -1126,6 +1134,29 @@ def remember(channel_id: int, prompt: str, answer: str) -> None:
     if size() > HISTORY_MAX_CHARS:
         while len(h) > 2 and size() > HISTORY_MAX_CHARS * 3 // 4:
             del h[:2]
+    _save_history()
+
+
+def _save_history() -> None:
+    STORE.save("history", HISTORY_FILE, {str(k): v for k, v in _history.items()})
+
+
+def load_state() -> None:
+    """Open the configured store (Postgres if DATABASE_URL is set) and load everything the bot keeps."""
+    global STORE
+    STORE = store_mod.open_store(DATABASE_URL, DATA_DIR)
+    _settings.update(STORE.load("settings", SETTINGS_FILE, {}))
+    _tasks.update({t["id"]: t for t in STORE.load("tasks", TASKS_FILE, [])})
+    _reminders.update({r["id"]: r for r in STORE.load("reminders", REMINDERS_FILE, [])})
+    _usage.update(STORE.load("usage", USAGE_FILE, {}))
+    _history.update({int(k): v for k, v in STORE.load("history", HISTORY_FILE, {}).items()})
+    log.info("Storage: %s", STORE.describe())
+
+
+def forget_history(channel_id: int) -> None:
+    """/reset: the local model's chat memory for this channel (kept across restarts otherwise)."""
+    if _history.pop(channel_id, None) is not None:
+        _save_history()
 
 
 async def list_local_models() -> list[str]:
@@ -1934,7 +1965,7 @@ async def _run_job_inner(job: CCJob) -> None:
         await _finalize(job)
 
 
-_usage: dict = _read_json(USAGE_FILE, {})
+_usage: dict = {}
 
 
 def spent_today() -> float:
@@ -1947,7 +1978,7 @@ def add_spend(usd: float) -> None:
         _usage.update(date=today, usd=0.0, jobs=0)  # keeps the per-session totals ("sessions")
     _usage["usd"] = round(_usage["usd"] + usd, 6)
     _usage["jobs"] += 1
-    _atomic_write_json(USAGE_FILE, _usage)
+    STORE.save("usage", USAGE_FILE, _usage)
 
 
 def budget_block(snap: CCSnap) -> str | None:
@@ -1978,7 +2009,7 @@ def record_cost(job: CCJob) -> None:
     if job.snap.backend == "anthropic":
         add_spend(job.cost_this if job.cost_this is not None else total)
     else:
-        _atomic_write_json(USAGE_FILE, _usage)
+        STORE.save("usage", USAGE_FILE, _usage)
 
 
 def unbacked_claims(asked: str, reply: str, raw: str) -> list[str]:
@@ -2041,6 +2072,12 @@ async def _finalize(job: CCJob) -> None:
     this = f"${job.cost_this:.4f}" if job.cost_this is not None else "unknown"
     log.info("CC job %s: %s, %s turns, this message %s, session total $%.4f, context %s tokens",
              job.id, job.outcome(), r.get("num_turns"), this, job.cost_session or 0, job.parser.context_tokens)
+    STORE.record_job({"job_id": job.id, "frontend": "telegram" if is_telegram_id(ch_id) else "discord",
+                      "channel_id": ch_id, "user_id": job.user_id, "backend": job.snap.backend, "model": job.snap.model,
+                      "perm": job.snap.perm, "outcome": job.outcome(), "turns": r.get("num_turns"),
+                      "cost_usd": job.cost_this, "session_cost_usd": job.cost_session,
+                      "context_tokens": job.parser.context_tokens, "seconds": job.elapsed(),
+                      "session_id": job.parser.session_id, "prompt": clip(redact(job.task), 500)})
     posted = await (_send_chat_reply(job) if job.chat else _send_result_card(job))
     if deletes and not posted:  # never delete a file the user didn't receive
         log.warning("Reply for job %s not posted; skipped deleting %d file(s)", job.id, len(deletes))
@@ -2836,7 +2873,7 @@ class PanelView(GuardedView):
         await self.rerender(inter)
 
     async def on_reset(self, inter):
-        _history.pop(self.channel_id, None)
+        forget_history(self.channel_id)
         await self.rerender(inter)
         await inter.followup.send("🧹 Local chat history cleared.", ephemeral=True)
 
@@ -3025,7 +3062,7 @@ class LocalReplyView(GuardedView):
 
     @discord.ui.button(label="Reset", emoji="🧹", style=discord.ButtonStyle.secondary, custom_id="r:reset")
     async def reset(self, inter: discord.Interaction, _b):
-        _history.pop(self.channel_id, None)
+        forget_history(self.channel_id)
         await inter.response.send_message("🧹 Local chat history cleared for this channel.", ephemeral=True)
 
 
@@ -3319,6 +3356,8 @@ async def core_start() -> None:
     load_tasks()
     load_reminders()
     _spawn(idle_unloader())
+    _spawn(power_watch())
+    _spawn(power_back_on_start())
     binary = claude_bin()
     if binary:
         try:
@@ -3441,7 +3480,7 @@ async def tasks_cmd(inter: discord.Interaction):
 
 @bot.tree.command(name="reset", description="Clear this channel's local chat history")
 async def reset_cmd(inter: discord.Interaction):
-    _history.pop(inter.channel_id, None)
+    forget_history(inter.channel_id)
     await inter.response.send_message("🧹 Local chat history cleared.", ephemeral=True)
 
 
@@ -3480,6 +3519,7 @@ def help_text(user_id: int) -> str:
         "Scheduled prompts: just ask (\"at 8am tell me the latest tweets from …\", \"every morning at 9 …\"); it runs "
         "then with web search and pings you. `/schedule <cron> <prompt>` for repeating ones · `/tasks`: list and cancel",
         "`/reset`: clear the local model's chat history · `/unload`: free GPU memory now",
+        "`/power` (owners): lock, sleep, hibernate, restart or shut down the laptop; the bot posts when it's back",
         "📎 **Images and files**: attach them to your message (or `file:` in `/ask`); Claude Code sees images and "
         "PDFs and reads text/code. Kept for a day in the workspace's discord_uploads folder.",
         *(["🎙️ **Voice notes**: send one here and it's transcribed on the laptop and answered like a typed "
@@ -3539,6 +3579,240 @@ async def unload_cmd(inter: discord.Interaction):
 
 
 # =============================================================================
+# Power controls (owners only, never a model tool): lock / sleep / hibernate / restart / shut down the laptop,
+# then say "back online" in the chat that asked: after a restart from a note in data/, after sleep from the time gap.
+# =============================================================================
+POWER_FILE = DATA_DIR / "power.json"
+POWER_DELAY = 30  # seconds of warning before a restart / shutdown, so it can still be cancelled
+POWER_ACTIONS = {  # key: (emoji, label, what happens)
+    "lock": ("🔒", "Lock", "Locks the screen. Everything keeps running, including the bot."),
+    "sleep": ("😴", "Sleep", "The bot is offline until someone wakes the laptop (lid, key or power button). "
+                            "It posts here when it's awake."),
+    "hibernate": ("🛌", "Hibernate", "Like sleep, but saved to disk and using no power. Offline until someone presses "
+                                    "the power button. It posts here when it's back."),
+    "restart": ("🔁", "Restart", f"Restarts in {POWER_DELAY}s (/power → Cancel stops it). The bot posts here once "
+                                "Windows is up and you've signed in."),
+    "shutdown": ("🔌", "Shut down", f"Shuts down in {POWER_DELAY}s (/power → Cancel stops it). It can't be turned "
+                                   "on from chat: someone has to press the power button."),
+}
+_POWER_PAST = {"sleep": "sleep", "hibernate": "hibernation", "restart": "the restart", "shutdown": "the shutdown"}
+_power_tick = time.time()
+
+
+def power_supported() -> bool:
+    return sys.platform == "win32"
+
+
+def startup_installed() -> bool:
+    """Whether scripts/bot_control.ps1 install added the bot to Startup apps (needed to come back after a restart)."""
+    appdata = os.getenv("APPDATA")
+    return bool(appdata) and (Path(appdata) / "Microsoft/Windows/Start Menu/Programs/Startup/Discord LLM Bot.lnk").exists()
+
+
+def power_pending() -> dict | None:
+    return STORE.load("power", POWER_FILE, None)
+
+
+def _dur(seconds: float) -> str:
+    s = int(max(seconds, 0))
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m {s % 60:02d}s"
+    return f"{s // 3600}h {s % 3600 // 60:02d}m"
+
+
+async def _run_cmd(*cmd: str) -> str | None:
+    """Run a fixed system command (no shell); None on success, else its message."""
+    p = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    out, _ = await asyncio.wait_for(p.communicate(), 20)
+    return None if p.returncode == 0 else (out.decode(errors="replace").strip() or f"exit code {p.returncode}")
+
+
+def _lock() -> bool:
+    import ctypes
+    return bool(ctypes.windll.user32.LockWorkStation())
+
+
+def _suspend(hibernate: bool) -> bool:
+    import ctypes
+    return bool(ctypes.WinDLL("powrprof").SetSuspendState(hibernate, False, False))  # returns after waking up
+
+
+async def _suspend_soon(hibernate: bool) -> None:
+    await asyncio.sleep(3)  # let the confirmation post first
+    ok = await asyncio.to_thread(_suspend, hibernate)
+    if not ok:
+        log.warning("SetSuspendState failed (hibernate=%s)", hibernate)
+
+
+async def do_power(action: str, channel_id: int, user_id: int) -> str | None:
+    """Start a power action. Returns None when it started, else an error for the user."""
+    if not power_supported():
+        return "Power controls only work when the bot runs on Windows."
+    log.info("Power: %s requested by %s in %s", action, user_id, channel_id)
+    if action == "lock":
+        return None if _lock() else "Windows refused to lock the screen."
+    if action == "cancel":
+        err = await _run_cmd("shutdown", "/a")
+        STORE.delete("power", POWER_FILE)
+        return "Nothing was pending." if err and "1116" in err else err
+    STORE.save("power", POWER_FILE, {"action": action, "channel_id": channel_id, "user_id": user_id, "at": time.time()})
+    if action in ("restart", "shutdown"):
+        err = await _run_cmd("shutdown", "/r" if action == "restart" else "/s", "/t", str(POWER_DELAY),
+                             "/c", "Requested from chat through the bot")
+    else:
+        _spawn(_suspend_soon(action == "hibernate"))
+        err = None
+    if err:
+        STORE.delete("power", POWER_FILE)
+    return err
+
+
+async def _post_power_notice(rec: dict, text: str, tries: int = 60) -> None:
+    """Post in the chat that asked, pinging only that user. Retries while the network / front end comes back."""
+    uid = rec["user_id"]
+    for _ in range(tries):
+        channel = await resolve_channel(rec["channel_id"])
+        if channel is not None:
+            try:
+                await channel.send(redact(f"<@{uid}> {text}"), allowed_mentions=discord.AllowedMentions(
+                    everyone=False, roles=False, replied_user=False, users=[discord.Object(uid)]))
+                return
+            except Exception as e:
+                log.warning("power notice not posted yet: %s", oneline(redact(e), 200))
+        await asyncio.sleep(5)
+    log.error("Power notice could not be delivered (channel %s)", rec["channel_id"])
+
+
+async def power_back_on_start() -> None:
+    """New process: if the laptop went down on request, say we're back (and how long it took)."""
+    rec = power_pending()
+    if not rec:
+        return
+    STORE.delete("power", POWER_FILE)
+    if time.time() - rec.get("at", 0) > 7 * 86400:
+        return
+    what = _POWER_PAST.get(rec.get("action"), "the restart")
+    await _post_power_notice(rec, f"✅ Back online after {what} (down for about {_dur(time.time() - rec['at'])}).")
+
+
+async def power_watch() -> None:
+    """Same process: notice waking from sleep (a jump in wall-clock time), and requests that never happened."""
+    global _power_tick
+    _power_tick = time.time()
+    while True:
+        await asyncio.sleep(10)
+        now = time.time()
+        gap, _power_tick = now - _power_tick, now
+        rec = power_pending()
+        if not rec:
+            continue
+        waited = now - rec.get("at", now)
+        if rec["action"] in ("sleep", "hibernate") and gap > 60:
+            STORE.delete("power", POWER_FILE)
+            await _post_power_notice(rec, f"✅ Awake again after {_POWER_PAST[rec['action']]} "
+                                          f"(offline for about {_dur(gap)}).")
+        elif waited > (120 if rec["action"] in ("sleep", "hibernate") else POWER_DELAY + 180):
+            STORE.delete("power", POWER_FILE)
+            await _post_power_notice(rec, f"⚠️ The laptop didn't {POWER_ACTIONS[rec['action']][1].lower()} "
+                                          "(cancelled on the laptop, or Windows refused). It's still on.", tries=3)
+
+
+def power_embed(note: str | None = None) -> discord.Embed:
+    e = discord.Embed(title="⚡ Laptop power", color=COLOR_RUN, description=note or "Owners only. Pick an action; "
+                      "everything except Lock asks you to confirm.")
+    rec = power_pending()
+    if rec and rec["action"] in ("restart", "shutdown"):
+        e.add_field(name="Pending", value=f"{POWER_ACTIONS[rec['action']][1]} at "
+                    f"<t:{int(rec['at']) + POWER_DELAY}:T>. Press ✖️ Cancel to stop it.", inline=False)
+    for em, label, desc in POWER_ACTIONS.values():
+        e.add_field(name=f"{em} {label}", value=desc, inline=False)
+    if not startup_installed():
+        e.set_footer(text="The bot isn't in Startup apps, so after a restart it won't come back on its own. "
+                          "Run scripts\\bot_control.ps1 install on the laptop.")
+    return e
+
+
+class PowerView(GuardedView):
+    async def interaction_check(self, inter: discord.Interaction) -> bool:
+        if not (is_allowed(inter.user.id) and is_owner(inter.user.id)):
+            await inter.response.send_message("⛔ Only owners can control the laptop.", ephemeral=True)
+            return False
+        return True
+
+    def __init__(self, channel_id: int):
+        super().__init__(timeout=600)
+        self.channel_id = channel_id
+        for key, (em, label, _) in POWER_ACTIONS.items():
+            b = discord.ui.Button(custom_id=f"pw:{key}", label=label, emoji=em, style=discord.ButtonStyle.secondary
+                                  if key == "lock" else discord.ButtonStyle.danger)
+            b.callback = self._picker(key)
+            self.add_item(b)
+        rec = power_pending()
+        if rec and rec["action"] in ("restart", "shutdown"):
+            b = discord.ui.Button(custom_id="pw:cancel", label="Cancel", emoji="✖️", style=discord.ButtonStyle.primary)
+            b.callback = self._picker("cancel")
+            self.add_item(b)
+
+    def _picker(self, key: str):
+        async def cb(inter: discord.Interaction):
+            self.stop()
+            if key in ("lock", "cancel"):  # harmless: no confirmation
+                err = await do_power(key, self.channel_id, inter.user.id)
+                done = "🔒 Locked." if key == "lock" else "✖️ Cancelled. The laptop stays on."
+                await inter.response.edit_message(content=f"⚠️ {err}" if err else done, embed=None, view=None)
+                return
+            em, label, desc = POWER_ACTIONS[key]
+            e = discord.Embed(title=f"{em} {label} the laptop?", description=desc, color=COLOR_ERR)
+            await inter.response.edit_message(embed=e, view=PowerConfirmView(self.channel_id, key))
+        return cb
+
+
+class PowerConfirmView(PowerView):
+    def __init__(self, channel_id: int, action: str):
+        discord.ui.View.__init__(self, timeout=120)
+        self.channel_id, self.action = channel_id, action
+        em, label, _ = POWER_ACTIONS[action]
+        go = discord.ui.Button(custom_id="pw:go", label=f"Yes, {label.lower()}", emoji=em, style=discord.ButtonStyle.danger)
+        go.callback = self.on_go
+        back = discord.ui.Button(custom_id="pw:back", label="Back", emoji="⬅️", style=discord.ButtonStyle.secondary)
+        back.callback = self.on_back
+        self.add_item(go)
+        self.add_item(back)
+
+    async def on_go(self, inter: discord.Interaction):
+        self.stop()
+        err = await do_power(self.action, self.channel_id, inter.user.id)
+        if err:
+            text = f"⚠️ Couldn't {POWER_ACTIONS[self.action][1].lower()}: {oneline(redact(err), 300)}"
+        elif self.action in ("restart", "shutdown"):
+            verb = "Restarting" if self.action == "restart" else "Shutting down"
+            text = f"{POWER_ACTIONS[self.action][0]} {verb} in {POWER_DELAY}s. /power → Cancel stops it."
+            if self.action == "restart":
+                text += (" I'll post here when I'm back." if startup_installed()
+                         else " I'm not in Startup apps, so I won't come back on my own.")
+        else:
+            text = f"{POWER_ACTIONS[self.action][0]} Going to {self.action} in a few seconds. I'll post here when I'm awake."
+        await inter.response.edit_message(content=text, embed=None, view=None)
+
+    async def on_back(self, inter: discord.Interaction):
+        self.stop()
+        await inter.response.edit_message(content=None, embed=power_embed(), view=PowerView(self.channel_id))
+
+
+@bot.tree.command(name="power", description="Lock, sleep, hibernate, restart or shut down the laptop (owners)")
+async def power_cmd(inter: discord.Interaction):
+    if not (is_allowed(inter.user.id) and is_owner(inter.user.id)):
+        await inter.response.send_message("⛔ Only owners can control the laptop.", ephemeral=True)
+        return
+    if not power_supported():
+        await inter.response.send_message("Power controls only work when the bot runs on Windows.", ephemeral=True)
+        return
+    await inter.response.send_message(embed=power_embed(), view=PowerView(inter.channel_id), ephemeral=True)
+
+
+# =============================================================================
 # Main
 # =============================================================================
 INSTANCE_PORT = 47823  # localhost port held while the bot runs, to prevent a second copy
@@ -3590,6 +3864,11 @@ def main() -> None:
         return
     _setup_logging()
     _register_bot_command()
+    try:
+        load_state()
+    except Exception as e:
+        log.error("%s", oneline(redact(e), 300))
+        sys.exit(1)
     if not DISCORD_TOKEN and not TELEGRAM_BOT_TOKEN:
         log.error("Neither DISCORD_TOKEN nor TELEGRAM_BOT_TOKEN is set (see .env.example).")
         sys.exit(1)

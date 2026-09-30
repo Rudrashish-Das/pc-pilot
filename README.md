@@ -39,6 +39,8 @@ One bot process, two front ends. Both share one backend: engines, Claude Code se
   - lean CLI flags (about 10k tokens per call instead of 34k);
   - a per-message cost breakdown.
 - **Frees the GPU:** idle models are unloaded (`/unload` does it right away).
+- **Storage:** JSON files in `data/` with no setup, or a Postgres database if you set `DATABASE_URL`. Either way it holds settings, tasks, reminders, spend, the local model's chat memory and a history of every Claude Code job with its cost.
+- **Laptop power from chat** (`/power`, owners only): lock, sleep, hibernate, restart or shut down, with a confirmation step. The bot posts in the chat when it's back up.
 
 ## Security model
 
@@ -165,6 +167,16 @@ claude
   CC_MAX_BUDGET_USD=1.0       # per job
   CC_DAILY_BUDGET_USD=5.0     # per day
   ```
+
+### Optional: Postgres instead of files
+
+By default everything the bot keeps goes into JSON files in `data/`. To use a local Postgres database instead, create one called `llmbot`, then set:
+
+```ini
+DATABASE_URL=postgresql://postgres:yourpassword@localhost:5432/llmbot
+```
+
+On the next start the bot creates its tables and imports any existing `data/` files. See [docs/SETUP.md](docs/SETUP.md#notes) for details.
 - **No Anthropic account?** Claude Code can run on your Ollama model: in `/panel` → ⚙️ Settings, set the backend to **🦙 Ollama**. See [docs/SETUP.md](docs/SETUP.md#claude-code-on-your-own-model-no-anthropic-account).
 
 ### 7. First run
@@ -206,7 +218,7 @@ pip install -r requirements.txt
 .\scripts\bot_control.ps1 restart
 ```
 
-Your settings, tasks, reminders and logs are in `data/` and `.env`, which git never touches.
+Your settings, tasks, reminders and logs are in `data/` (or your Postgres database, see below) and `.env`. Git never touches either.
 
 ---
 
@@ -223,6 +235,7 @@ Your settings, tasks, reminders and logs are in `data/` and `.env`, which git ne
 | Scheduled prompts | "every weekday at 9 give me a news brief" or `/schedule` | same, or `/schedule 0 9 * * 1-5 \| prompt` |
 | List and cancel them | `/tasks` | `/tasks` |
 | Free the GPU | `/unload` | `/unload` |
+| Lock / sleep / hibernate / restart / shut down the laptop (owners) | `/power` | `/power` |
 
 Voice notes, images and files work on both. See [docs/SETUP.md](docs/SETUP.md) for how each feature behaves and what it costs.
 
@@ -268,6 +281,7 @@ $env:LLMBOT_LIVE = "1"; pytest    # also real Claude Code (haiku, a few cents), 
 ```
 
 - The suites load the bot with no `.env` and a temporary `data/` folder, so they never touch your real settings, tasks or reminders.
+- The Postgres suite runs only if you point `LLMBOT_TEST_DATABASE_URL` at a throwaway database. It drops and recreates its tables there.
 - CI runs the offline suites on Windows on every push.
 - Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 

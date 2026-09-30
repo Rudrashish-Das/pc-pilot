@@ -17,6 +17,7 @@ dependencies = [
     "ddgs>=9.0",
     "tzdata; sys_platform == 'win32'",
     "faster-whisper>=1.1",
+    "psycopg[binary]>=3.2",
 ]
 
 [project.optional-dependencies]

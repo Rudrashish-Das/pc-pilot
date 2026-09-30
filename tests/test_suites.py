@@ -18,6 +18,8 @@ LIVE = os.getenv("LLMBOT_LIVE") == "1"
 def test_suite(suite):
     if suite.startswith("live_") and not LIVE:
         pytest.skip("live suite: set LLMBOT_LIVE=1")
+    if suite.startswith("pg_") and not os.getenv("LLMBOT_TEST_DATABASE_URL"):
+        pytest.skip("Postgres suite: set LLMBOT_TEST_DATABASE_URL to a throwaway database")
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     r = subprocess.run([sys.executable, suite], cwd=SUITES, env=env, capture_output=True, text=True,
                        encoding="utf-8", errors="replace", timeout=900)

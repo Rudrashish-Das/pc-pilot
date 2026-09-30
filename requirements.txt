@@ -5,5 +5,7 @@ apscheduler>=3.10,<4
 trafilatura>=1.12
 ddgs>=9.0
 tzdata; sys_platform == "win32"
+# Only used when DATABASE_URL is set (Postgres storage)
+psycopg[binary]>=3.2
 # Voice notes (local speech-to-text). The model downloads on first use (~460 MB for WHISPER_MODEL=small).
 faster-whisper>=1.1

@@ -18,6 +18,9 @@ Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `
   - `/local model:` accepts only the server's listed models from non-owners, since on a paid gateway any model name could cost money.
   - Voice notes stop decoding at `VOICE_MAX_SECONDS`, instead of decoding the whole file first (a small file can hold hours of audio).
   - Telegram buttons only act in the chat they were posted in, and disabled buttons can't be triggered.
+- `/power` (owners, on Discord and Telegram): lock, sleep, hibernate, restart or shut down the laptop, with a confirmation step. Restart and shutdown wait 30 seconds and can be cancelled. The bot posts "back online" in the chat that asked, after a restart (from a note in `data/`) or after waking up (it notices the time jump).
+
+- Optional Postgres storage (`DATABASE_URL`): settings, tasks, reminders, usage, local chat memory and the power note go in `llmbot_state`, and every Claude Code job is a row in `llmbot_jobs`. Existing `data/` files are imported once. Without `DATABASE_URL`, the same data stays in JSON files in `data/`. That now includes `history.json`, so the local model's memory survives restarts, and `jobs.jsonl`.
 
 ## 0.24.0
 - Telegram: the stats line is a tap-to-reveal spoiler, because Telegram has no small grey text. It can be turned off per chat in `/panel` → ⚙️ Settings. Warnings (compact hints, blocked tools, unbacked claims) stay visible either way.
