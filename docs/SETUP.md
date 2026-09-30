@@ -50,6 +50,7 @@ In Discord, run `/help` for a quick guide, or `/panel` for settings. Only you ca
 ### More than one server
 Invite the bot to the other server, using the Discord Developer Portal → your app → OAuth2 → URL Generator: scopes **bot** + **applications.commands**, and permissions View Channels, Send Messages, Embed Links, Attach Files, Read Message History. Then either:
 - list them all: `GUILD_ID=111111,222222` — commands appear instantly in each; or
+- `GUILD_ID=all` — every server the bot is in, and any it joins later, instantly (servers not listed otherwise get no slash commands at all); or
 - leave `GUILD_ID` empty — global commands, in every server the bot is in and in DMs (new/changed commands can take a while to show).
 
 Restart the bot after changing it. It removes leftover copies so commands never show twice. Access is still controlled by `ALLOWED_USER_IDS` / `OWNER_IDS`, not by the server: people in other servers are ignored unless they're listed, and only owners get Claude Code (which runs on this PC, in your workspace).

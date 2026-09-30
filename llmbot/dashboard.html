@@ -496,6 +496,9 @@ function render() {
   const st = S.state;
   if (!st) return;
   const b = st.bot, busy = st.busy;
+  // The bot restarted (maybe a new version): refresh the chat's command list, or / keeps offering the old one
+  if (S.started && S.started !== b.started) getJSON("/api/chats").then((r) => { C.commands = r.commands || []; }).catch(() => {});
+  S.started = b.started;
   const working = busy.claude || busy.inflight.length || busy.local_locked;
   const fe = b.frontends || [];
   $("dot").className = "dot " + (working ? "run" : fe.length && fe.every((f) => f.ok) ? "ok" : "err");
@@ -558,7 +561,7 @@ function renderNow() {
     (sp.plan || []).length ? h("div", { style: "margin-top:12px" },
       h("div", { class: "small", style: "margin-bottom:4px" }, "Plan usage limits" + (sp.plan_status === "rejected" ? " · ⛔ limit reached" : "")),
       sp.plan.map((w) => h("div", { style: "margin-bottom:6px" }, meter(w.used,
-        `${w.label} · ${Math.round(w.used * 100)}%` + (w.resets_at ? (w.resets_at > nowS() ? ` · resets ${until(w.resets_at)}` : " · reset since") : "")))),
+        `${w.label} · ${Math.round(w.used * 100)}%` + (w.resets_at ? (w.resets_at > nowS() ? ` · resets ${when(w.resets_at)} (${until(w.resets_at)})` : " · reset since") : "")))),
       h("div", { class: "small muted" }, `As of ${ago(sp.plan_at)}, from the last Claude Code job. /usage in the chat checks now.`)) : null);
   // models
   const ms = st.models || [];

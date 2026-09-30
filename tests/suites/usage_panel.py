@@ -33,7 +33,7 @@ B.note_plan({"status": "allowed_warning", "rateLimitType": "five_hour", "utiliza
                                 "seven_day": {"utilization": 0.44, "resetsAt": now + 3 * 86400}}})
 w = B.plan_windows()
 check([x[0] for x in w] == ["5-hour limit", "Weekly · all models"] and w[0][1] == 0.91, f"labels and order: {w}")
-check(B.plan_warning().startswith("5-hour limit 91% used, resets <t:"), f"warning past 80%: {B.plan_warning()}")
+check(B.plan_warning().startswith("5-hour limit 91% used, resets at <t:") and ":t> (<t:" in B.plan_warning(), f"warning past 80%: {B.plan_warning()}")
 B.note_plan({"status": "allowed", "unifiedWindows": {"five_hour": {"utilization": 0.5, "resetsAt": now - 5}}})
 check(B.plan_windows()[0][1] == 0.0 and B.plan_windows()[1][1] == 0.44, "a window past its reset reads 0; others kept")
 check(B.plan_warning() is None, "no warning under 80%")

@@ -67,7 +67,9 @@ def _ids(name: str) -> set[int]:
 
 
 DISCORD_TOKEN = _env("DISCORD_TOKEN")
-# One or more servers (comma-separated) for instant slash-command sync; empty = global commands (all servers + DMs)
+# One or more servers (comma-separated) for instant slash-command sync; "all" = every server the bot is in (and joins
+# later); empty = global commands (all servers + DMs, but Discord can take up to an hour to show changes)
+GUILD_ALL = "all" in (_env("GUILD_ID") + "," + _env("GUILD_IDS")).lower().replace(" ", "").split(",")
 GUILD_IDS = sorted(_ids("GUILD_ID") | _ids("GUILD_IDS"))
 ALLOWED_USER_IDS = _ids("ALLOWED_USER_IDS")
 OWNER_IDS = _ids("OWNER_IDS") or set(ALLOWED_USER_IDS)  # fallback; empty => Claude Code disabled
@@ -2488,6 +2490,13 @@ def plan_windows() -> list[tuple[str, float, float | None]]:
     return out
 
 
+def reset_text(ts: float) -> str:
+    """'at 14:30 (in 1 hour)' today/soon, 'on Sunday, 4 Oct 2026, 14:30 (in 3 days)' further off: the clock time
+    first, like the Claude app, rendered in each viewer's local time by every front end."""
+    ts = int(ts)
+    return (f"at <t:{ts}:t> (<t:{ts}:R>)" if ts - time.time() < 20 * 3600 else f"on <t:{ts}:F> (<t:{ts}:R>)")
+
+
 def plan_warning() -> str | None:
     """For the stats line: the plan's fullest window once it passes PLAN_WARN, or that a limit was hit."""
     plan = _usage.get("plan") or {}
@@ -2496,9 +2505,9 @@ def plan_warning() -> str | None:
         return None
     label, used, resets = max(wins, key=lambda w: w[1])
     if plan.get("status") == "rejected" and used >= 1:
-        return f"⛔ plan limit reached ({label}), resets <t:{int(resets)}:R>" if resets else "⛔ plan limit reached"
+        return f"⛔ plan limit reached ({label}), resets {reset_text(resets)}" if resets else "⛔ plan limit reached"
     if used >= PLAN_WARN:
-        return f"{label} {used:.0%} used" + (f", resets <t:{int(resets)}:R>" if resets else "")
+        return f"{label} {used:.0%} used" + (f", resets {reset_text(resets)}" if resets else "")
     return None
 
 
@@ -2595,7 +2604,7 @@ def usage_embed(channel_id: int) -> discord.Embed:
     if wins:
         lines = []
         for label, used, resets in wins:
-            when = (f" · resets <t:{int(resets)}:R>" if resets and resets > time.time() else " · reset since" if resets else "")
+            when = (f" · resets {reset_text(resets)}" if resets and resets > time.time() else " · reset since" if resets else "")
             lines.append(f"**{label}** {used:.0%}{when}\n`{bar(used)}`")
         if plan.get("status") == "rejected":
             lines.append("⛔ A limit is reached: Claude Code jobs on the Anthropic backend fail until it resets.")
@@ -4152,17 +4161,20 @@ class LLMBot(discord.Client):
         self.tree = Tree(self)
         self._cleaned = False
 
+    async def _sync_guild(self, gid: int) -> None:
+        guild = discord.Object(id=gid)
+        self.tree.copy_global_to(guild=guild)
+        try:
+            await self.tree.sync(guild=guild)
+        except discord.Forbidden:
+            log.warning("Can't add slash commands to server %s: is the bot in it (invited with the "
+                        "applications.commands scope)?", gid)
+
     async def setup_hook(self) -> None:
         await core_start()
-        if GUILD_IDS:
-            for gid in GUILD_IDS:
-                guild = discord.Object(id=gid)
-                self.tree.copy_global_to(guild=guild)
-                try:
-                    await self.tree.sync(guild=guild)
-                except discord.Forbidden:
-                    log.warning("Can't add slash commands to server %s: is the bot in it (invited with the "
-                                "applications.commands scope)?", gid)
+        if GUILD_IDS or GUILD_ALL:
+            for gid in GUILD_IDS:  # "all": synced in on_ready, once the server list is known
+                await self._sync_guild(gid)
             # Per-server mode: drop global copies left from global mode, or every command would show twice.
             if await self.tree.fetch_commands():
                 await self.http.bulk_upsert_global_commands(self.application_id, [])
@@ -4170,17 +4182,28 @@ class LLMBot(discord.Client):
         else:
             await self.tree.sync()
 
+    async def on_guild_join(self, guild: discord.Guild):
+        if GUILD_ALL:
+            await self._sync_guild(guild.id)
+            log.info("Added slash commands to new server %s (%s)", guild.name, guild.id)
+
     async def close(self) -> None:
         await core_stop()
         await super().close()
 
     async def on_ready(self):
-        log.info("Logged in as %s (commands: %s)", self.user, ", ".join(map(str, GUILD_IDS)) or "global")
+        log.info("Logged in as %s (commands: %s)", self.user,
+                 "every server" if GUILD_ALL else ", ".join(map(str, GUILD_IDS)) or "global")
         note_event("bot", f"Discord connected as {self.user}")
         if self._cleaned:
             return
         self._cleaned = True
         joined = {g.id for g in self.guilds}
+        if GUILD_ALL:
+            for gid in sorted(joined - set(GUILD_IDS)):
+                await self._sync_guild(gid)
+            log.info("Slash commands in %d server(s)", len(joined))
+            return
         for gid in set(GUILD_IDS) - joined:
             log.warning("GUILD_ID %s: the bot isn't in that server; invite it first", gid)
         for g in self.guilds:

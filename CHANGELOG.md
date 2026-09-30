@@ -3,6 +3,9 @@
 Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `bot_v22.py`). From 0.23.0 on, git history is the record.
 
 ## Unreleased
+- `GUILD_ID=all`: slash commands in every server the bot is in, and in servers it joins later, instantly. Before, a server missing from `GUILD_ID` had no slash commands at all.
+- Plan limits show the clock time they reset, not only how long until then: "resets at 14:30 (in 1 hour)", "on Sunday, 4 Oct, 14:30 (in 3 days)".
+- The dashboard chat refreshes its `/` command list when the bot restarts (a page left open kept offering the old list).
 - 🧵 **Discord threads** work like Telegram topics: a new thread (or forum post) starts with its channel's settings (engine, models, permissions, "full access without asking") and its own Claude Code session; `/panel` in a thread changes only that thread; "without asking" turned on or off in the channel also applies to its threads. The permission check asks for "Send Messages in Threads" there.
 - 📊 **`/usage`** (Discord, Telegram, dashboard chat), like the Claude app's usage panel: this chat's context window (tokens used of the model's real window, e.g. 153.5k / 200k), your Claude plan's limits (5-hour and weekly, % used and when each resets) and today's API-equivalent spend. Plan limits come from Claude Code itself after every Anthropic-backend job; 🔄 **Check plan now** asks with a tiny Haiku call (~$0.003 API-equivalent). The stats line warns once a limit passes 80%, `/panel` shows a one-line summary, and the dashboard's usage card has the bars.
 - The Claude models' context window is now read from Claude Code (`modelUsage`), so stats lines show e.g. `41k/200k ctx` on the Anthropic backend too, and warn when it's almost full.

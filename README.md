@@ -262,7 +262,7 @@ Voice notes, images and files work on both. See [docs/SETUP.md](docs/SETUP.md) f
 
 | Problem | Fix |
 |---|---|
-| Slash commands don't show up | Set `GUILD_ID` for instant sync. Global commands can take up to an hour. Restart Discord (`Ctrl+R`). |
+| Slash commands don't show up | Set `GUILD_ID` for instant sync (`GUILD_ID=all` covers every server the bot is in; a server missing from a list gets none). Global commands can take up to an hour. Restart Discord (`Ctrl+R`). |
 | The bot ignores @mentions | Turn on **Message Content Intent** (step 2), and check that your id is in `ALLOWED_USER_IDS`. |
 | "Missing Access" in a private channel | Add the bot to the channel: Edit Channel → Permissions. `/panel` warns you about this. |
 | Telegram answers nothing | Your id must be in `TELEGRAM_ALLOWED_USER_IDS` (send `/start` to get it), then restart. |
