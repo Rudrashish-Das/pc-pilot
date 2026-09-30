@@ -22,3 +22,8 @@ os.environ.setdefault("OLLAMA_AUTOSTART", "false")  # core_start must never laun
 sys.path.insert(0, str(ROOT))
 
 import llmbot.core as B  # noqa: E402
+
+
+async def _no_skill_discovery():  # core_start must never launch a real Claude Code process in tests
+    return B._cc_skills
+B.discover_cc_skills = _no_skill_discovery

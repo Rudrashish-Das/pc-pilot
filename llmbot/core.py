@@ -163,6 +163,10 @@ CC_DAILY_BUDGET_USD = float(_env("CC_DAILY_BUDGET_USD", "5.0") or 0)
 CC_EFFORT = _env("CC_EFFORT").lower()
 # Load your MCP servers, skills and plugins into Discord jobs. Off by default: they add ~24k tokens to every call.
 CC_EXTRAS = _env("CC_EXTRAS", "false").lower() in ("1", "true", "yes", "on")
+# Claude Code's skills (docx, pdf, pptx, xlsx, deep-research, code-review, skill-creator, …: built in, from plugins,
+# and ~/.claude/skills): Claude uses them when a request fits, and /skill <name> runs one. Adds ~2.5k (cached)
+# tokens per message. MCP servers stay off unless CC_EXTRAS.
+CC_SKILLS = _env("CC_SKILLS", "true").lower() not in ("0", "false", "no", "off")
 # Start a fresh Claude Code session when the channel's last one has been idle this long (minutes). Claude Code's
 # prompt cache lasts 1 hour; after that, resuming re-sends the whole history at cache-write price. 0 = never reset.
 CC_SESSION_IDLE_MINUTES = float(_env("CC_SESSION_IDLE_MINUTES", "60") or 0)
@@ -240,7 +244,7 @@ CC_SYSTEM_APPEND = _env("CC_SYSTEM_APPEND") or (
     "lines.")
 # Sessions started under a different prompt/flag setup are not resumed: Claude Code keeps a session's original
 # system prompt, and a changed prefix means a full (paid) cache rewrite anyway.
-CC_SETUP_FINGERPRINT = hashlib.sha256(f"{CC_SYSTEM_APPEND}|{CC_EXTRAS}".encode()).hexdigest()[:12]
+CC_SETUP_FINGERPRINT = hashlib.sha256(f"{CC_SYSTEM_APPEND}|{CC_EXTRAS}|{CC_SKILLS}".encode()).hexdigest()[:12]
 
 # ---- Secret handling ----------------------------------------------------------
 # Env vars that look secret are removed from the Claude Code subprocess (except its own ANTHROPIC_/CLAUDE_ ones
@@ -325,12 +329,15 @@ ANTHROPIC_MODELS = ["sonnet", "opus", "fable", "haiku"]
 # File access is path-scoped to the workspace ("./**" = the job's cwd); verified against the CLI that reads and
 # writes outside it (absolute paths, ../) are denied. No Bash in read/edit: `cat`, `git diff --no-index` and
 # `git log --output` can read or write anywhere. --tools also drops unused tool schemas (fewer tokens per call).
-READ_TOOLS = ["Read(./**)", "Glob(./**)", "Grep(./**)", "WebSearch", "WebFetch"]
+# Skill loads a skill's instructions (a skill runs with the job's own tools and permissions, nothing more).
+SKILL_TOOL = ",Skill" if CC_SKILLS else ""
+READ_TOOLS = ["Read(./**)", "Glob(./**)", "Grep(./**)", "WebSearch", "WebFetch", *(["Skill"] if CC_SKILLS else [])]
 PERM_ARGS = {
     "read": ["--permission-mode", "dontAsk", "--permission-prompts", "none",
-             "--tools", "Read,Glob,Grep,WebSearch,WebFetch", "--allowedTools", *READ_TOOLS],
+             "--tools", "Read,Glob,Grep,WebSearch,WebFetch" + SKILL_TOOL, "--allowedTools", *READ_TOOLS],
     "edit": ["--permission-mode", "acceptEdits", "--permission-prompts", "none",
-             "--tools", "Read,Glob,Grep,Edit,Write,WebSearch,WebFetch", "--allowedTools", *READ_TOOLS, "Edit(./**)"],
+             "--tools", "Read,Glob,Grep,Edit,Write,WebSearch,WebFetch" + SKILL_TOOL, "--allowedTools", *READ_TOOLS,
+             "Edit(./**)"],
     "full": ["--permission-mode", "bypassPermissions"],
 }
 # Read/edit jobs can't run commands, but the workspace is theirs to write. Files Claude Code itself loads from there
@@ -1977,7 +1984,7 @@ def perm_args(snap: CCSnap) -> list[str]:
         return PERM_ARGS[snap.perm]
     if snap.perm == "full":
         return [*PERM_ARGS["full"], "--disallowedTools", "WebSearch", "WebFetch"]
-    tools = "Read,Glob,Grep" + (",Edit,Write" if snap.perm == "edit" else "")
+    tools = "Read,Glob,Grep" + (",Edit,Write" if snap.perm == "edit" else "") + SKILL_TOOL
     allowed = [t for t in READ_TOOLS if not t.startswith("Web")] + (["Edit(./**)"] if snap.perm == "edit" else [])
     return [*PERM_ARGS[snap.perm][:4], "--tools", tools, "--allowedTools", *allowed, *MCP_WEB_TOOLS]
 
@@ -2042,7 +2049,8 @@ def build_cc_command(binary: str, snap: CCSnap) -> list[str]:
     if not CC_EXTRAS:
         # no MCP servers/skills/plugins: ~70% fewer tokens per call (measured). /compact is a slash command, so a
         # compact run keeps them enabled (verified: with --disable-slash-commands it replies "isn't available").
-        cmd += [a for a in LEAN_ARGS if not (snap.compact and a == "--disable-slash-commands")]
+        # --disable-slash-commands also turns off skills, so CC_SKILLS keeps them (MCP servers stay off).
+        cmd += [a for a in LEAN_ARGS if not ((snap.compact or CC_SKILLS) and a == "--disable-slash-commands")]
     if local_web(snap):
         cmd += ["--mcp-config", mcp_web_config()]
     if CC_SYSTEM_APPEND:
@@ -2145,6 +2153,8 @@ class StreamParser:
             st = ev.get("subtype")
             if st == "init":
                 self.model = ev.get("model")
+                if ev.get("skills"):  # keeps /skill's list current (skills added or removed since the bot started)
+                    _cc_skills[:] = ev["skills"]
                 out.append(f"🟢 Session started · `{self.model}`")
             elif st == "permission_denied":
                 self._denied.add(ev.get("tool_use_id", ""))
@@ -2281,12 +2291,61 @@ async def kill_tree(proc: asyncio.subprocess.Process) -> None:
         pass
 
 
+# Claude Code's skills, as its init event lists them (every job refreshes this; discover_cc_skills at start)
+_cc_skills: list[str] = []
+
+
+async def discover_cc_skills() -> list[str]:
+    """Ask the Claude Code CLI which skills it has: it lists them in its first (init) event, and the process is
+    stopped right there, before the model has answered (a few tokens at most)."""
+    binary = claude_bin()
+    if not binary or not CC_SKILLS:
+        return _cc_skills
+    snap = CCSnap(CC_BACKEND, CC_MODEL, "read", next(iter(WORKSPACES)))
+    cmd = [binary, "-p", "--output-format", "stream-json", "--verbose", "--model", "haiku", "--max-turns", "1",
+           "--tools", "Skill", "--strict-mcp-config", "--setting-sources", "user"]
+    kw: dict[str, Any] = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32"
+                          else {"start_new_session": True})
+    proc = await asyncio.create_subprocess_exec(*cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                                stderr=subprocess.DEVNULL, cwd=str(WORKSPACES[snap.workspace]),
+                                                env=build_cc_env(snap), limit=16 * 1024 * 1024, **kw)
+    try:
+        proc.stdin.write(b"ok")
+        await proc.stdin.drain()
+        proc.stdin.close()
+
+        async def read_init():
+            async for line in proc.stdout:
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if ev.get("type") == "system" and ev.get("subtype") == "init":
+                    return ev.get("skills") or []
+            return None
+        skills = await asyncio.wait_for(read_init(), 60)
+    except (asyncio.TimeoutError, OSError, BrokenPipeError, ConnectionResetError) as e:
+        log.warning("Couldn't list Claude Code's skills: %s", type(e).__name__)
+        skills = None
+    finally:
+        await kill_tree(proc)
+    if skills is not None:
+        _cc_skills[:] = skills
+        log.info("Claude Code skills: %d", len(skills))
+    return _cc_skills
+
+
 def cc_prompt(job: CCJob) -> str:
     """What Claude Code receives. Claude otherwise assumes UTC (5h30 behind IST), so "8am today" at 02:30 IST became
     tomorrow. The time goes in the message, not the system prompt, so the cached prefix stays the same."""
-    if job.snap.compact or job.task.strip().startswith("/"):
-        return job.task
     head = f"[Now: {now_local():%A %d %B %Y, %H:%M} {TIMEZONE}]\n[Access: {ACCESS_NOTES[job.snap.perm]}]"
+    if job.snap.compact:
+        return job.task
+    if job.task.strip().startswith("/"):
+        # A slash command only works at the very start; for a skill, the time and access go after it (they become
+        # part of its request text). Other commands (/compact, /context …) are passed on untouched.
+        name = job.task.strip()[1:].split(None, 1)[0] if job.task.strip()[1:] else ""
+        return f"{job.task.rstrip()}\n\n{head}" if name in _cc_skills else job.task
     if SKILLS_ENABLED:
         block, job.skills = skills_mod.prompt_block(job.task, job.snap.resume)
         if block:
@@ -3396,6 +3455,45 @@ async def save_uploads(atts: list, workspace: Path) -> tuple[list[str], list[str
     return lines, problems
 
 
+def find_cc_skill(name: str) -> tuple[str | None, list[str]]:
+    """A skill name as typed -> (exact skill name, or None and close matches). 'pdf' finds 'anthropic-skills:pdf'."""
+    name = name.strip().lstrip("/").lower()
+    if not _cc_skills:
+        return (name or None), []  # list not known yet: let Claude Code decide
+    if name in _cc_skills:
+        return name, []
+    short = [s for s in _cc_skills if s.split(":")[-1].lower() == name]
+    if len(short) == 1:
+        return short[0], []
+    return None, short or [s for s in _cc_skills if name and name in s.lower()][:8]
+
+
+async def run_skill(channel, user_id: int, name: str, request: str, out: Out, attachments: list | None = None) -> None:
+    """/skill <name> [request]: run one of Claude Code's skills in this chat's Claude Code session."""
+    if not (CC_ENABLED and is_owner(user_id)):
+        await out(content="⛔ Claude Code and its skills are owner-only.")
+        return
+    if not CC_SKILLS:
+        await out(content="Claude Code's skills are off (CC_SKILLS=false in .env).")
+        return
+    skill, close = find_cc_skill(name)
+    if skill is None:
+        hint = f" Did you mean: {', '.join(f'`{c}`' for c in close)}?" if close else " `/skills` lists them."
+        await out(content=f"No Claude Code skill named `{name}`.{hint}")
+        return
+    s = get_settings(channel.id)
+    ws = WORKSPACES.get(s["workspace"])
+    atts = [a for a in attachments or [] if not a.is_voice_message()]
+    if atts and ws is not None:
+        lines, problems = await save_uploads(atts, ws)
+        if problems:
+            await out(content="-# 📎 " + "; ".join(problems))
+        if lines:
+            request = (request + "\n\n[Files the user attached, in your working directory:]\n" + "\n".join(lines)).strip()
+    snap = snapshot(channel.id, resume=CC_CONTINUE)
+    await request_cc(channel, user_id, f"/{skill} {request}".strip(), snap, out, chat=s["style"] == "chat")
+
+
 async def handle_prompt(channel, user_id: int, prompt: str, out: Out, attachments: list | None = None) -> None:
     """Route a prompt through the channel's engine. attachments: Discord files sent with the message."""
     s = get_settings(channel.id)
@@ -4408,6 +4506,8 @@ async def core_start() -> None:
         except Exception as e:
             log.warning("claude --version failed: %s", e)
     log.info("Claude Code CLI: %s (%s)", binary or "not found", CLAUDE_VERSION)
+    if binary and CC_SKILLS:
+        _spawn(discover_cc_skills())  # for /skill's name list; each job refreshes it
     note_event("bot", f"Bot started (llmbot {__version__}, storage: {STORE.kind})")
     if DASHBOARD_PORT:
         from llmbot import dashboard
@@ -4555,7 +4655,40 @@ def skills_reply(user_id: int, args: str) -> str:
     if verb:
         return "Usage: /skills, /skills show <name>, /skills forget <name>"
     off = "" if SKILLS_ENABLED else "\n-# Skills are off (SKILLS_ENABLED=false): none are saved or used."
-    return redact(skills_mod.list_text()) + "\n-# /skills show <name> · /skills forget <name>" + off
+    return (cc_skills_text() + "\n\n" + redact(skills_mod.list_text()).replace("**Skills**", "**Learned skills**", 1)
+            + "\n-# /skills show <name> · /skills forget <name>" + off)
+
+
+def cc_skills_text() -> str:
+    if not CC_SKILLS:
+        return "**Claude Code's skills** are off (CC_SKILLS=false in .env)."
+    if not _cc_skills:
+        return "**Claude Code's skills**: not listed yet (the bot asks Claude Code when it starts)."
+    groups: dict[str, list[str]] = {}
+    for s in _cc_skills:
+        plugin, _, short = s.rpartition(":")
+        groups.setdefault(plugin or "built in", []).append(short)
+    lines = [f"**Claude Code's skills** ({len(_cc_skills)}): Claude uses them when a request fits, or run one with "
+             "`/skill <name> [what you want]`"]
+    lines += [f"• {plugin}: " + ", ".join(f"`{n}`" for n in names) for plugin, names in groups.items()]
+    return "\n".join(lines)
+
+
+async def _skill_names(inter: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    cur = current.lower()
+    hits = [s for s in _cc_skills if cur in s.lower()]
+    hits.sort(key=lambda s: (not s.split(":")[-1].lower().startswith(cur), s))
+    return [app_commands.Choice(name=s, value=s) for s in hits[:25]]
+
+
+@bot.tree.command(name="skill", description="Run one of Claude Code's skills (docx, pdf, xlsx, deep-research, …)")
+@app_commands.describe(name="Which skill (start typing)", request="What you want it to do",
+                       file="Optional file for it to work on")
+@app_commands.autocomplete(name=_skill_names)
+async def skill_cmd(inter: discord.Interaction, name: str, request: str = "", file: discord.Attachment | None = None):
+    await inter.response.defer(thinking=True)
+    await run_skill(inter.channel, inter.user.id, name, request, Out(inter.channel, inter),
+                    attachments=[file] if file else None)
 
 
 @bot.tree.command(name="usage", description="Context window, Claude plan limits (5-hour, weekly) and spend")
@@ -4607,6 +4740,8 @@ def help_text(user_id: int) -> str:
         "then with web search and pings you. `/schedule <cron> <prompt>` for repeating ones · `/tasks`: list and cancel",
         "`/reset`: clear the local model's chat history · `/unload`: free GPU memory now",
         "`/usage`: context window, Claude plan limits (5-hour, weekly) and spend, with 🔄 to check now",
+        "`/skill <name> [request] [file]`: run one of Claude Code's skills (docx, pdf, pptx, xlsx, deep-research, "
+        "code-review, skill-creator, …); Claude also uses them by itself when a request fits",
         "`/skills`: what Claude Code learned from earlier tasks (it saves how it did something that took work, and "
         "reuses it on similar tasks) · show or forget one",
         "`/power` (owners): lock, sleep, hibernate, restart or shut down the PC; the bot posts when it's back",

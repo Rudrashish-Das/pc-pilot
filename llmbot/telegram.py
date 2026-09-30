@@ -55,7 +55,8 @@ COMMANDS = [
     ("new", "Start a new Claude Code session"),
     ("topic", "topic <name>: new topic = a separate conversation"),
     ("usage", "Context window, Claude plan limits, spend"),
-    ("skills", "What Claude Code learned from earlier tasks"),
+    ("skill", "skill <name> [request]: run a Claude Code skill"),
+    ("skills", "Claude Code's skills, and what it learned"),
     ("compact", "Shrink a long Claude Code conversation"),
     ("stop", "Stop the reply that's running"),
     ("tasks", "List and cancel reminders and scheduled prompts"),
@@ -814,6 +815,12 @@ class Telegram:
                 await self._submit_text(key, text, user)
                 return
         if cmd:
+            if cmd == "skill":  # "/skill pdf summarise this" as a file's caption: the file goes with it
+                atts, notes = self._attachments(m)
+                if notes:
+                    await me.reply("-# " + "; ".join(notes))
+                await self._skill(args, chan, me, user, atts)
+                return
             await self._command(cmd, args, chan, me, user, private)
             return
         # In a topic, a message that isn't a reply points at the topic's first message: not a reply to the bot
@@ -1013,6 +1020,17 @@ class Telegram:
         else:
             await out(content=f"Unknown command /{cmd}. See /help.")
 
+    async def _skill(self, args: str, chan: TgChannel, me: TgMessage, user: dict, atts: list) -> None:
+        core = self.core
+        out = core.Out(chan, reply_to=me)
+        name, _, request = args.strip().partition(" ")
+        if not name:
+            await out(content=core.cc_skills_text() + "\n\nUsage: /skill <name> [what you want], e.g. "
+                              "`/skill pdf summarise the attached file` (attach files with the command as caption)")
+            return
+        async with chan.typing():
+            await core.run_skill(chan, user["id"], name, request.strip(), out, attachments=atts)
+
     async def _new_topic(self, name: str, chan: TgChannel, out, private: bool) -> None:
         name = " ".join(name.split())[:128]
         if not name:
@@ -1049,7 +1067,9 @@ class Telegram:
             "Scheduled prompts: just ask (\"at 8am tell me the latest news on …\"); /schedule <cron> | <prompt>; /tasks lists and cancels",
             "/reset: clear the local model's memory · /unload: free GPU memory now",
             "/usage: context window, Claude plan limits (5-hour, weekly) and spend, with a button to check now",
-            "/skills: what Claude Code learned from earlier tasks and reuses on similar ones · /skills show|forget <name>",
+            "/skill <name> [request]: run one of Claude Code's skills (docx, pdf, pptx, xlsx, deep-research, …); "
+            "attach files with the command as caption. Claude also uses them by itself when a request fits.",
+            "/skills: Claude Code's skills, and what it learned from earlier tasks · /skills show|forget <name>",
             "/topic <name>: a new topic = a separate conversation with its own session and settings",
             "/power (owners): lock, sleep, hibernate, restart or shut down the PC; I post here when I'm back",
             "/dashboard (owners): web page with what I'm doing now and what I've done, for your phone on the same Wi-Fi",

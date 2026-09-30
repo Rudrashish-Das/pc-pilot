@@ -417,6 +417,15 @@ class WebFrontend:
             return
         cmd, _, args = text.partition(" ") if text.startswith("/") else ("", "", "")
         try:
+            if cmd.lower() == "/skill":  # files sent with it go to the skill
+                name, _, request = args.strip().partition(" ")
+                if not name:
+                    await out(content=core.cc_skills_text() + "\n\nUsage: /skill <name> [what you want], e.g. "
+                                      "`/skill pdf summarise this` with the file attached")
+                    return
+                async with WebChannel(chat).typing():
+                    await core.run_skill(WebChannel(chat), uid, name, request.strip(), out, attachments=attachments)
+                return
             if cmd and await self._command(cmd[1:].lower(), args.strip(), chat, out):
                 return
             async with WebChannel(chat).typing():
@@ -561,7 +570,8 @@ COMMANDS = [  # (name, arguments, what it does): for /help and the page's autoco
     ("stop", "", "Stop the reply that's running"),
     ("tasks", "", "List and cancel reminders and scheduled prompts"),
     ("usage", "", "Context window, Claude plan limits (5-hour, weekly), spend"),
-    ("skills", "[show|forget <name>]", "What Claude Code learned from earlier tasks"),
+    ("skill", "<name> [request]", "Run one of Claude Code's skills (docx, pdf, xlsx, deep-research, …)"),
+    ("skills", "[show|forget <name>]", "Claude Code's skills, and what it learned from earlier tasks"),
     ("remind", "<when> | <what>", "One-time reminder, e.g. in 10 min | take meds"),
     ("reset", "", "Clear the local model's chat memory"),
     ("unload", "", "Free GPU memory now"),

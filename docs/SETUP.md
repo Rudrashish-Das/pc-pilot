@@ -127,6 +127,14 @@ Like the usage panel in the Claude app:
 
 Once a limit passes 80%, the stats line under each reply says so (visible on Telegram too), and `/panel` shows a one-line summary. The dashboard's **Claude usage** card shows the same bars.
 
+## Claude Code's skills
+Claude Code comes with skills (instructions and scripts for a kind of task): Word, PDF, PowerPoint and Excel files, deep research, charts, code review, making new skills, and more, plus any you add to `~/.claude/skills`. They work from every chat:
+- **Just ask** ("make a Word document of this", "turn this into a spreadsheet"): Claude picks the skill itself.
+- **`/skill <name> [what you want]`** runs one directly. On Discord the name autocompletes and you can attach a file; on Telegram and in the dashboard chat, attach files to the message with the command as caption. Short names work (`pdf` = `anthropic-skills:pdf`).
+- **`/skills`** lists them (and the learned skills below).
+
+A skill runs with the chat's permissions: read-only and edit jobs can read it and use files in the workspace, but skills that run scripts (making a .docx or .xlsx, for example) need full access. Skills add ~2.5k tokens per message, mostly from the prompt cache; `CC_SKILLS=false` turns them off. MCP servers and plugins' other parts stay off unless `CC_EXTRAS=true`.
+
 ## Skills (learning from earlier tasks)
 After a task that took real work (several steps, trial and error, a fix for something that failed first), Claude Code saves what worked as a short note: a name, when to use it, and the steps and gotchas. The bot shows *learned skill `name`* under the reply. Later, when a message looks like that task, the note goes into Claude Code's prompt, so it starts from what worked instead of working it out again. Saving a note under the same name replaces it, so skills improve over time.
 - `/skills` lists them (with how often each was used), `/skills show <name>` shows one, `/skills forget <name>` deletes one (owners). On Discord: `/skills show:` / `forget:`.

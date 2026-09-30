@@ -67,8 +67,51 @@ check(not err and "fix-wifi" in ok, "tool accepts")
 m = B.action_markers([("save_skill", {"name": "Fix Wifi", "when": "wifi drops", "steps": "1. netsh wlan show\n2. reset"})])
 text, notes = S.extract(f"ok\n{m}", allowed=True)
 check(text == "ok" and S.get("fix-wifi")["body"] == "1. netsh wlan show\n2. reset", "marker round-trips, multi-line")
-check(B.skills_reply(OWNER, "").startswith("**Skills** (3)") and "**backup-photos** v2" in B.skills_reply(OWNER, "show backup photos"),
+check("**Learned skills** (3)" in B.skills_reply(OWNER, "") and "**backup-photos** v2" in B.skills_reply(OWNER, "show backup photos"),
       "/skills list and show")
+
+print("== Claude Code's own skills")
+B._cc_skills[:] = ["code-review", "dataviz", "anthropic-skills:pdf", "anthropic-skills:docx", "other:pdf-tools"]
+listing = B.skills_reply(OWNER, "")
+check(listing.startswith("**Claude Code's skills** (5)") and "• anthropic-skills: `pdf`, `docx`" in listing
+      and "• built in: `code-review`, `dataviz`" in listing, "/skills lists them, grouped")
+check(B.find_cc_skill("pdf") == ("anthropic-skills:pdf", []), "'pdf' finds anthropic-skills:pdf")
+check(B.find_cc_skill("/code-review") == ("code-review", []), "exact name, leading / ok")
+check(B.find_cc_skill("doc")[0] is None and "anthropic-skills:docx" in B.find_cc_skill("doc")[1], "unknown: suggestions")
+job = SimpleNamespace(snap=snap, task="/anthropic-skills:pdf summarise it", skills=[])
+p = B.cc_prompt(job)
+check(p.startswith("/anthropic-skills:pdf summarise it\n\n[Now: ") and "[Access: full" in p,
+      "skill call: stays first, time and access after it")
+job = SimpleNamespace(snap=snap, task="/context", skills=[])
+check(B.cc_prompt(job) == "/context", "other slash commands untouched")
+cmd = B.build_cc_command("claude", B.replace(snap, perm="read"))
+check("--disable-slash-commands" not in cmd and "--strict-mcp-config" in cmd, "skills on, MCP servers still off")
+check("Read,Glob,Grep,WebSearch,WebFetch,Skill" in cmd and "Skill" in cmd[cmd.index("--allowedTools"):],
+      "read-only jobs may load skills (they run with the job's own tools)")
+started = []
+
+
+async def fake_request(channel, uid, task, snap, out, **kw):
+    started.append(task)
+
+
+async def skill_runs():
+    real = B.request_cc
+    B.request_cc = fake_request
+    said = []
+
+    async def out(**kw):
+        said.append(kw.get("content"))
+    try:
+        await B.run_skill(SimpleNamespace(id=CHAT), OWNER, "pdf", "summarise it", out)
+        check(started[-1] == "/anthropic-skills:pdf summarise it", "run_skill starts /<skill> <request>")
+        await B.run_skill(SimpleNamespace(id=CHAT), 222, "pdf", "x", out)
+        check("owner-only" in said[-1] and len(started) == 1, "owners only")
+        await B.run_skill(SimpleNamespace(id=CHAT), OWNER, "nope", "x", out)
+        check("No Claude Code skill named `nope`" in said[-1], "unknown skill refused")
+    finally:
+        B.request_cc = real
+asyncio.run(skill_runs())
 check("Only owners" in B.skills_reply(222, "forget fix-wifi") and S.get("fix-wifi"), "only owners forget")
 
 

@@ -249,6 +249,7 @@ Your settings, tasks, reminders and logs are in `data/` (or your Postgres databa
 | Several conversations at once | a channel or a thread: each thread starts with its channel's settings, own session | `/topic <name>`: each topic has its own session and settings |
 | What Claude Code learned from earlier tasks | `/skills` | `/skills` |
 | Context window, Claude plan limits (5-hour, weekly), spend | `/usage` | `/usage` |
+| Run one of Claude Code's skills (docx, pdf, xlsx, deep-research, …) | `/skill` (name autocompletes) | `/skill <name> [request]` |
 | Reminders | "remind me in 10 min to…" or `/remind` | same, or `/remind in 10 min \| take meds` |
 | Scheduled prompts | "every weekday at 9 give me a news brief" or `/schedule` | same, or `/schedule 0 9 * * 1-5 \| prompt` |
 | List and cancel them, or choose the model a task runs on and what it may do | `/tasks` | `/tasks` |
