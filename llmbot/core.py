@@ -87,7 +87,7 @@ def is_telegram_id(x: int) -> bool:
 # Discord id (positive) or Telegram id (abs < 10^16) can be.
 WEB_ID_BASE = 10 ** 17
 WEB_USER_ID = -WEB_ID_BASE
-# Who the dashboard chat talks as: owner (Claude Code, /power: the access key is the laptop owner's), user (local
+# Who the dashboard chat talks as: owner (Claude Code, /power: the access key is the PC owner's), user (local
 # model only), or off.
 DASHBOARD_CHAT = _env("DASHBOARD_CHAT", "owner").lower()
 
@@ -487,26 +487,45 @@ def where(channel_id: int) -> str:
     return fe.where(channel_id) if fe else f"channel {channel_id}"
 
 
+# Names of people and chats as last seen, kept across restarts: Discord and Telegram only tell the bot a name when a
+# message arrives, so without this the dashboard would show "Telegram user 8956532133" after every restart.
+NAMES_FILE = DATA_DIR / "names.json"
+_known_names: dict[str, str] = {}  # "u:<id>" / "c:<id>" -> name
+
+
+def remember_name(key: str, name: str | None) -> str | None:
+    if name and _known_names.get(key) != name:
+        _known_names[key] = name
+        STORE.save("names", NAMES_FILE, _known_names)
+    return name
+
+
 def chat_label(channel_id: int) -> str:
     """A readable chat name for the dashboard: '#general · My Server', 'DM with Alex', 'Telegram: Alex (private)'."""
-    if is_telegram_id(channel_id) or is_web_id(channel_id):
+    key = f"c:{channel_id}"
+    if is_web_id(channel_id):
         return where(channel_id)
+    if is_telegram_id(channel_id):
+        name = (getattr(_telegram, "_chats", {}) or {}).get(channel_id)
+        return remember_name(key, f"Telegram: {name}") if name else _known_names.get(key) or where(channel_id)
     ch = bot.get_channel(channel_id)
     if ch is None:
-        return f"Discord channel {channel_id}"
+        return _known_names.get(key) or f"Discord channel {channel_id}"
     if isinstance(ch, discord.DMChannel):
-        return f"DM with {ch.recipient.display_name}" if ch.recipient else "Discord DM"
+        return remember_name(key, f"DM with {ch.recipient.display_name}" if ch.recipient else "Discord DM")
     guild = getattr(ch, "guild", None)
-    return f"#{getattr(ch, 'name', channel_id)}" + (f" · {guild.name}" if guild else "")
+    return remember_name(key, f"#{getattr(ch, 'name', channel_id)}" + (f" · {guild.name}" if guild else ""))
 
 
 def user_label(user_id: int) -> str:
-    if is_telegram_id(user_id):
-        return (getattr(_telegram, "_names", {}) or {}).get(user_id) or f"Telegram user {user_id}"
+    key = f"u:{user_id}"
     if is_web_id(user_id):
         return "You (dashboard)"
+    if is_telegram_id(user_id):
+        name = (getattr(_telegram, "_names", {}) or {}).get(user_id)
+        return remember_name(key, name) if name else _known_names.get(key) or f"Telegram user {user_id}"
     u = bot.get_user(user_id)
-    return u.display_name if u else f"Discord user {user_id}"
+    return remember_name(key, u.display_name) if u else _known_names.get(key) or f"Discord user {user_id}"
 
 
 # =============================================================================
@@ -1037,7 +1056,7 @@ def tasks_text(user_id: int | None = None) -> str:
 REMINDERS_FILE = DATA_DIR / "reminders.json"
 REMINDER_MAX = 50
 REMINDER_MAX_AHEAD = timedelta(days=366)
-REMINDER_LATE = timedelta(seconds=90)  # fired this much after its time -> say it's late (laptop asleep / bot off)
+REMINDER_LATE = timedelta(seconds=90)  # fired this much after its time -> say it's late (PC asleep / bot off)
 REMINDER_SNOOZE = timedelta(minutes=10)
 # Claude Code sets reminders with [[remind: WHEN | TEXT]] lines in its reply (see CC_SYSTEM_APPEND)
 REMIND_RE = re.compile(r"\[\[remind:\s*([^\]\n|]+?)\s*\|\s*([^\]\n]+?)\s*\]\]", re.I)
@@ -1203,7 +1222,7 @@ async def fire_reminder(rid: str) -> None:
                ref=rid, due=r["when"])
     text = redact(f"⏰ <@{uid}> {r['text']}")
     if late:
-        text += f"\n-# late: this was due {discord.utils.format_dt(when, 'f')} (bot was offline or the laptop was asleep)"
+        text += f"\n-# late: this was due {discord.utils.format_dt(when, 'f')} (bot was offline or the PC was asleep)"
     try:  # ping only the person the reminder is for, never roles/@everyone even if the text contains them
         await channel.send(text, allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, replied_user=False,
                                                                     users=[discord.Object(uid)]),
@@ -1416,10 +1435,21 @@ def load_state() -> None:
     _reminders.update({r["id"]: r for r in STORE.load("reminders", REMINDERS_FILE, [])})
     _usage.update(STORE.load("usage", USAGE_FILE, {}))
     _history.update({int(k): v for k, v in STORE.load("history", HISTORY_FILE, {}).items()})
+    _known_names.update(STORE.load("names", NAMES_FILE, {}))
     try:
         _events.extend(reversed(STORE.recent_events(EVENTS_KEEP)))
     except Exception as e:
         log.warning("Could not load the activity history: %s", oneline(redact(e), 200))
+    # Names the activity history recorded before names.json existed (skipping "Telegram user 123"-style fallbacks)
+    fallback = re.compile(r"^(Telegram|Discord) (user|channel|chat|group) ?-?\d*$|^Telegram (chat|group)$|^Web")
+    added = False
+    for e in _events:
+        for key, name in ((f"u:{e.get('user_id')}", e.get("who")), (f"c:{e.get('channel_id')}", e.get("where"))):
+            if name and not key.endswith("None") and key not in _known_names and not fallback.match(name):
+                _known_names[key] = name
+                added = True
+    if added:
+        STORE.save("names", NAMES_FILE, _known_names)
     log.info("Storage: %s", STORE.describe())
 
 
@@ -3059,7 +3089,7 @@ async def run_scheduled_task(task_id: str) -> None:
     uid = task["created_by"]
     head = f"⏰ <@{uid}> **{task['description']}** · `{task_id}`"
     if task.get("at") and now_local() - datetime.fromisoformat(task["at"]) > REMINDER_LATE:
-        head += f"\n-# late: was due {discord.utils.format_dt(datetime.fromisoformat(task['at']), 'f')} (bot was offline or the laptop was asleep)"
+        head += f"\n-# late: was due {discord.utils.format_dt(datetime.fromisoformat(task['at']), 'f')} (bot was offline or the PC was asleep)"
     task_defaults(task)
     authority = task_authority(task)  # re-checked every run: OWNER_IDS may have changed since it was allowed
     reminders_ok = task["reminders"] and authority
@@ -3485,7 +3515,7 @@ class TaskEditView(GuardedView):
         if perm == "full" and is_owner(inter.user.id):  # unattended shell access: confirm first
             self.stop()
             e = discord.Embed(title="⚠️ Give this task full access?", color=COLOR_ERR, description=(
-                "Every time it runs, nobody watching, Claude Code can run **any command** on this laptop in the "
+                "Every time it runs, nobody watching, Claude Code can run **any command** on this PC in the "
                 "workspace and beyond, without asking. Only do this for a prompt you wrote and trust.\n\n"
                 f"**Prompt:** {clip(_tasks[self.task_id]['prompt'], 1500)}"))
             await inter.response.edit_message(embed=e, view=TaskFullConfirmView(self.task_id, self.list_user))
@@ -4063,11 +4093,11 @@ def help_text(user_id: int) -> str:
         "Scheduled prompts: just ask (\"at 8am tell me the latest tweets from …\", \"every morning at 9 …\"); it runs "
         "then with web search and pings you. `/schedule <cron> <prompt>` for repeating ones · `/tasks`: list and cancel",
         "`/reset`: clear the local model's chat history · `/unload`: free GPU memory now",
-        "`/power` (owners): lock, sleep, hibernate, restart or shut down the laptop; the bot posts when it's back",
+        "`/power` (owners): lock, sleep, hibernate, restart or shut down the PC; the bot posts when it's back",
         "`/dashboard` (owners): web page with what the bot is doing and has done, for your phone on the same Wi-Fi",
         "📎 **Images and files**: attach them to your message (or `file:` in `/ask`); Claude Code sees images and "
         "PDFs and reads text/code. Kept for a day in the workspace's discord_uploads folder.",
-        *(["🎙️ **Voice notes**: send one here and it's transcribed on the laptop and answered like a typed "
+        *(["🎙️ **Voice notes**: send one here and it's transcribed on the PC and answered like a typed "
            "message (answer all / replies only / off in ⚙️ Settings)."] if VOICE_ENABLED else []),
         "",
         "**The small grey line** under a reply: model · what that reply cost · today's spend / daily cap · "
@@ -4134,14 +4164,14 @@ async def unload_cmd(inter: discord.Interaction):
 
 
 # =============================================================================
-# Power controls (owners only, never a model tool): lock / sleep / hibernate / restart / shut down the laptop,
+# Power controls (owners only, never a model tool): lock / sleep / hibernate / restart / shut down the PC,
 # then say "back online" in the chat that asked: after a restart from a note in data/, after sleep from the time gap.
 # =============================================================================
 POWER_FILE = DATA_DIR / "power.json"
 POWER_DELAY = 30  # seconds of warning before a restart / shutdown, so it can still be cancelled
 POWER_ACTIONS = {  # key: (emoji, label, what happens)
     "lock": ("🔒", "Lock", "Locks the screen. Everything keeps running, including the bot."),
-    "sleep": ("😴", "Sleep", "The bot is offline until someone wakes the laptop (lid, key or power button). "
+    "sleep": ("😴", "Sleep", "The bot is offline until someone wakes the PC (a key, the mouse, the power button or a laptop's lid). "
                             "It posts here when it's awake."),
     "hibernate": ("🛌", "Hibernate", "Like sleep, but saved to disk and using no power. Offline until someone presses "
                                     "the power button. It posts here when it's back."),
@@ -4189,7 +4219,7 @@ def autostart() -> str | None:
     return mode
 
 
-AUTOSTART_TIP = "On the laptop, run scripts\\bot_control.ps1 boot as administrator."
+AUTOSTART_TIP = "On the PC, run scripts\\bot_control.ps1 boot as administrator."
 
 
 def power_pending() -> dict | None:
@@ -4285,7 +4315,7 @@ async def _post_power_notice(rec: dict, text: str, tries: int = 60) -> None:
 
 
 async def power_back_on_start() -> None:
-    """New process: if the laptop went down on request, say we're back (and how long it took)."""
+    """New process: if the PC went down on request, say we're back (and how long it took)."""
     rec = power_pending()
     if not rec:
         return
@@ -4316,12 +4346,12 @@ async def power_watch() -> None:
                                           f"(offline for about {_dur(gap)}).")
         elif waited > (120 if rec["action"] in ("sleep", "hibernate") else POWER_DELAY + 180):
             STORE.delete("power", POWER_FILE)
-            await _post_power_notice(rec, f"⚠️ The laptop didn't {POWER_ACTIONS[rec['action']][1].lower()} "
-                                          "(cancelled on the laptop, or Windows refused). It's still on.", tries=3)
+            await _post_power_notice(rec, f"⚠️ The PC didn't {POWER_ACTIONS[rec['action']][1].lower()} "
+                                          "(cancelled on the PC, or Windows refused). It's still on.", tries=3)
 
 
 def power_embed(note: str | None = None) -> discord.Embed:
-    e = discord.Embed(title="⚡ Laptop power", color=COLOR_RUN, description=note or "Owners only. Pick an action; "
+    e = discord.Embed(title="⚡ PC power", color=COLOR_RUN, description=note or "Owners only. Pick an action; "
                       "everything except Lock asks you to confirm.")
     rec = power_pending()
     if rec and rec["action"] in ("restart", "shutdown"):
@@ -4331,7 +4361,7 @@ def power_embed(note: str | None = None) -> discord.Embed:
         e.add_field(name=f"{em} {label}", value=desc, inline=False)
     mode = autostart()
     if mode == "logon":
-        e.set_footer(text="After a restart the bot comes back only once someone signs in on the laptop. To have it "
+        e.set_footer(text="After a restart the bot comes back only once someone signs in on the PC. To have it "
                           f"come back at boot: {AUTOSTART_TIP}")
     elif mode is None:
         e.set_footer(text=f"The bot doesn't start on its own, so after a restart it stays offline. {AUTOSTART_TIP}")
@@ -4341,7 +4371,7 @@ def power_embed(note: str | None = None) -> discord.Embed:
 class PowerView(GuardedView):
     async def interaction_check(self, inter: discord.Interaction) -> bool:
         if not (is_allowed(inter.user.id) and is_owner(inter.user.id)):
-            await inter.response.send_message("⛔ Only owners can control the laptop.", ephemeral=True)
+            await inter.response.send_message("⛔ Only owners can control the PC.", ephemeral=True)
             return False
         return True
 
@@ -4364,11 +4394,11 @@ class PowerView(GuardedView):
             self.stop()
             if key in ("lock", "cancel"):  # harmless: no confirmation
                 err = await do_power(key, self.channel_id, inter.user.id)
-                done = "🔒 Locked." if key == "lock" else "✖️ Cancelled. The laptop stays on."
+                done = "🔒 Locked." if key == "lock" else "✖️ Cancelled. The PC stays on."
                 await inter.response.edit_message(content=f"⚠️ {err}" if err else done, embed=None, view=None)
                 return
             em, label, desc = POWER_ACTIONS[key]
-            e = discord.Embed(title=f"{em} {label} the laptop?", description=desc, color=COLOR_ERR)
+            e = discord.Embed(title=f"{em} {label} the PC?", description=desc, color=COLOR_ERR)
             await inter.response.edit_message(embed=e, view=PowerConfirmView(self.channel_id, key))
         return cb
 
@@ -4396,7 +4426,7 @@ class PowerConfirmView(PowerView):
             text = f"{POWER_ACTIONS[self.action][0]} {verb} in {POWER_DELAY}s. /power → Cancel stops it."
             if self.action == "restart":
                 text += {"boot": " I'll post here when I'm back, about a minute after Windows starts.",
-                         "logon": " I'll post here once someone signs in on the laptop.",
+                         "logon": " I'll post here once someone signs in on the PC.",
                          }.get(autostart(), " I don't start on my own, so I'll stay offline until someone starts me.")
         else:
             text = f"{POWER_ACTIONS[self.action][0]} Going to {self.action} in a few seconds. I'll post here when I'm awake."
@@ -4407,10 +4437,10 @@ class PowerConfirmView(PowerView):
         await inter.response.edit_message(content=None, embed=power_embed(), view=PowerView(self.channel_id))
 
 
-@bot.tree.command(name="power", description="Lock, sleep, hibernate, restart or shut down the laptop (owners)")
+@bot.tree.command(name="power", description="Lock, sleep, hibernate, restart or shut down the PC (owners)")
 async def power_cmd(inter: discord.Interaction):
     if not (is_allowed(inter.user.id) and is_owner(inter.user.id)):
-        await inter.response.send_message("⛔ Only owners can control the laptop.", ephemeral=True)
+        await inter.response.send_message("⛔ Only owners can control the PC.", ephemeral=True)
         return
     if not power_supported():
         await inter.response.send_message("Power controls only work when the bot runs on Windows.", ephemeral=True)

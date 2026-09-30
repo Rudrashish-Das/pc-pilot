@@ -73,6 +73,32 @@ async def main():
         check(len(B._inflight) == 1, "in-flight work visible while running")
     check(not B._inflight, "and gone after")
 
+    print("== names survive restarts")
+    class FakeTg:
+        _names = {5550001: "Rudrashish"}
+        _chats = {5550001: "Rudrashish (private)"}
+    discord_only = B.is_telegram_id
+    B.is_telegram_id = lambda x: abs(int(x)) < 10 ** 16  # the real rule, for this part
+    B._telegram = FakeTg()
+    check(B.user_label(5550001) == "Rudrashish" and B.chat_label(5550001) == "Telegram: Rudrashish (private)", "live names")
+    B._telegram = None  # as after a restart, before the person writes again
+    B._known_names.clear()
+    B._known_names.update(B.STORE.load("names", B.NAMES_FILE, {}))
+    check(B.user_label(5550001) == "Rudrashish" and B.chat_label(5550001) == "Telegram: Rudrashish (private)",
+          "names come back from data/names.json")
+    check(B.user_label(5550002) == "Telegram user 5550002", "unknown people still get the fallback")
+    B._known_names.clear()
+    B.NAMES_FILE.unlink()
+    for i, (uid, who) in enumerate([(5550003, "Asha"), (5550004, "Telegram user 5550004")]):  # older history rows
+        B._event_last_id += 1
+        B.STORE.record_event({"id": B._event_last_id, "ts": 1.0, "kind": "local", "level": "info", "text": "hi",
+                              "user_id": uid, "channel_id": uid, "who": who, "where": f"Telegram: {who} (private)"})
+    B._events.clear()
+    B.load_state()
+    check(B.user_label(5550003) == "Asha" and "u:5550004" not in B._known_names,
+          "names backfilled from the activity history (fallback labels skipped)")
+    B.is_telegram_id = discord_only
+
     print("== server")
     B.DASHBOARD_TOKEN, B.DASHBOARD_HOST = "", "127.0.0.1"
     D.core, D._key = B, key

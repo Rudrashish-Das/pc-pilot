@@ -54,7 +54,7 @@ COMMANDS = [
     ("reset", "Clear the local model's chat memory"),
     ("log", "Full log of the last Claude Code reply"),
     ("unload", "Free GPU memory now"),
-    ("power", "Lock, sleep, restart or shut down the laptop"),
+    ("power", "Lock, sleep, restart or shut down the PC"),
     ("dashboard", "Link to the web dashboard (owners, private chat)"),
     ("help", "How to use this bot"),
 ]
@@ -681,8 +681,10 @@ class Telegram:
 
     def _seen(self, user: dict, chat: dict) -> None:
         self._names[user["id"]] = name = user.get("first_name") or user.get("username") or str(user["id"])
+        self.core.remember_name(f"u:{user['id']}", name)  # kept across restarts, for the dashboard
         if chat.get("id"):
             self._chats[chat["id"]] = chat.get("title") or f"{chat.get('first_name') or name} (private)"
+            self.core.remember_name(f"c:{chat['id']}", f"Telegram: {self._chats[chat['id']]}")
 
     async def _on_message(self, m: dict) -> None:
         core = self.core
@@ -893,7 +895,7 @@ class Telegram:
             await out(content=f"💤 Unloaded: {', '.join(f'`{m}`' for m in done)}" if done else "💤 Nothing to unload.")
         elif cmd == "power":
             if not core.is_owner(uid):
-                await out(content="⛔ Only owners can control the laptop.")
+                await out(content="⛔ Only owners can control the PC.")
                 return
             if not core.power_supported():
                 await out(content="Power controls only work when the bot runs on Windows.")
@@ -931,10 +933,10 @@ class Telegram:
             "/remind <when> | <what>, or just ask (\"remind me to take my meds in 10 min\")",
             "Scheduled prompts: just ask (\"at 8am tell me the latest news on …\"); /schedule <cron> | <prompt>; /tasks lists and cancels",
             "/reset: clear the local model's memory · /unload: free GPU memory now",
-            "/power (owners): lock, sleep, hibernate, restart or shut down the laptop; I post here when I'm back",
+            "/power (owners): lock, sleep, hibernate, restart or shut down the PC; I post here when I'm back",
             "/dashboard (owners): web page with what I'm doing now and what I've done, for your phone on the same Wi-Fi",
             "📎 Photos and files: attach them to your message (Claude Code sees images and PDFs).",
-            *(["🎙️ Voice notes: transcribed on the laptop and answered like a typed message."] if core.VOICE_ENABLED else []),
+            *(["🎙️ Voice notes: transcribed on the PC and answered like a typed message."] if core.VOICE_ENABLED else []),
             "",
             "**The small italic line** under a reply: model · cost · today's spend · context used/limit · session. "
             "\"memory 3/6\" on the plain local engine = how many recent exchanges it still remembers.",
