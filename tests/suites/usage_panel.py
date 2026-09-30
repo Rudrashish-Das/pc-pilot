@@ -61,6 +61,17 @@ job = B.CCJob(channel=SimpleNamespace(id=CHAT), task="x", snap=snap, user_id=1)
 job.parser = p
 line = B.chat_stats(job, [])
 check("5-hour limit 85% used" in line.split(B.STATS_MARK)[1], "stats line warns (after the mark: visible on Telegram)")
+line = B.chat_stats(job, [])
+check("used" not in line and "5-hour 85%" in line.split(B.STATS_MARK)[0], "next reply: only in the routine part, no warning")
+check("5-hour limit" in B.chat_stats(B.replace(job, channel=SimpleNamespace(id=CHAT + 1)), []).split(B.STATS_MARK)[1],
+      "another chat gets its own first warning")
+B.note_plan({"status": "allowed_warning", "unifiedWindows": {"five_hour": {"utilization": 0.87, "resetsAt": now + 3600}}})
+check("used" not in B.chat_stats(job, []), "same step (80-89%): still quiet")
+B.note_plan({"status": "allowed_warning", "unifiedWindows": {"five_hour": {"utilization": 0.92, "resetsAt": now + 3600}}})
+check("5-hour limit 92% used" in B.chat_stats(job, []).split(B.STATS_MARK)[1], "crossing 90% warns once more")
+check("used" not in B.chat_stats(job, []), "then quiet again")
+B.note_plan({"status": "allowed", "unifiedWindows": {"five_hour": {"utilization": 0.85, "resetsAt": now + 5 * 3600}}})
+check("5-hour limit 85% used" in B.chat_stats(job, []).split(B.STATS_MARK)[1], "a new 5-hour window warns afresh")
 B.update_settings(CHAT, cc_session="abcdef1234", cc_session_at=time.time(), cc_session_path=str(B.WORKSPACES[snap.workspace]),
                   cc_session_setup=B.CC_SETUP_FINGERPRINT, cc_session_ctx=153500, cc_session_ctx_limit=200000)
 e = B.usage_embed(CHAT)

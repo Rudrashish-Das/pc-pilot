@@ -2502,6 +2502,27 @@ def plan_warning() -> str | None:
     return None
 
 
+PLAN_STEPS = (0.8, 0.9, 1.0)
+_plan_warned: dict[int, tuple] = {}  # chat -> (window, reset time, step) it was last warned about
+
+
+def plan_stats(channel_id: int) -> tuple[str | None, str | None]:
+    """(warning, routine part) for a stats line. The warning shows once per chat each time the fullest window
+    reaches a new step (80%, 90%, full) within one reset period; the other replies carry it only in the routine
+    part ("5-hour 99%"), which Telegram hides behind a tap."""
+    warn = plan_warning()
+    if warn is None:
+        return None, None
+    label, used, resets = max(plan_windows(), key=lambda w: w[1])
+    step = max(s for s in PLAN_STEPS if used >= s or s == PLAN_STEPS[0])
+    key = (label, resets, step)
+    short = f"{label.split(' · ')[0].replace(' limit', '')} {used:.0%}"
+    if _plan_warned.get(channel_id) == key:
+        return None, short
+    _plan_warned[channel_id] = key
+    return warn + " (/usage)", short
+
+
 def context_window(result: dict | None, model: str | None) -> int | None:
     """The model's context window from the result's modelUsage (e.g. 200000, or 1000000 for 1M-context models)."""
     usage = (result or {}).get("modelUsage") or {}
@@ -2945,8 +2966,11 @@ def chat_stats(job: CCJob, notes: list[str]) -> str:
             parts.append(f"session {fmt_usd(job.cost_session)}")
         cap = f"/${CC_DAILY_BUDGET_USD:g}" if CC_DAILY_BUDGET_USD > 0 else ""
         parts.append(f"today ${spent_today():.2f}{cap}")
-        if warn := plan_warning():
-            warnings.append(warn + " (/usage)")
+        warn, short = plan_stats(getattr(job.channel, "id", 0))
+        if warn:
+            warnings.append(warn)
+        elif short:
+            parts.append(short)
     ctx = job.parser.context_tokens
     if ctx:
         parts.append(ctx_text(ctx, job.ctx_limit, job.ctx_approx))
