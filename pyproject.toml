@@ -7,6 +7,7 @@ name = "llmbot"
 dynamic = ["version"]
 description = "Discord and Telegram bot for a local LLM (Ollama) and the Claude Code CLI, running on your own PC."
 readme = "README.md"
+license = { text = "PolyForm-Noncommercial-1.0.0" }  # LICENSE.md: free for personal use, no commercial use
 requires-python = ">=3.11"
 dependencies = [
     "discord.py>=2.4",

@@ -309,4 +309,14 @@ $env:LLMBOT_LIVE = "1"; pytest    # also real Claude Code (haiku, a few cents), 
 
 ## License
 
-Not chosen yet.
+[PolyForm Noncommercial 1.0.0](LICENSE.md). In short, this summary isn't the license, and the license text is what counts:
+
+- **Allowed for free:**
+  - personal use, study, hobby projects, and running it for yourself, your family and friends;
+  - changing it;
+  - sharing it, as long as you pass on the license and the `Required Notice` line;
+  - use by charities, schools, public research and government bodies.
+- **Not allowed:** any commercial use, such as using it in or for a business, selling it, or offering it as a paid service.
+- **Commercial licence:** contact the author.
+
+This isn't an OSI "open source" license, because those can't restrict commercial use. The libraries this project uses keep their own licenses.
