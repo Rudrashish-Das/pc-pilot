@@ -488,7 +488,7 @@ def where(channel_id: int) -> str:
 
 
 # Names of people and chats as last seen, kept across restarts: Discord and Telegram only tell the bot a name when a
-# message arrives, so without this the dashboard would show "Telegram user 8956532133" after every restart.
+# message arrives, so without this the dashboard would show "Telegram user 123456789" after every restart.
 NAMES_FILE = DATA_DIR / "names.json"
 _known_names: dict[str, str] = {}  # "u:<id>" / "c:<id>" -> name
 
