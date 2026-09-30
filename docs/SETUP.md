@@ -152,9 +152,11 @@ A page served by the bot itself (on by default, port 8765) that shows:
 It refreshes every 3 seconds while open and pauses when the tab is in the background.
 
 **Opening it on your phone**
-1. Send `/dashboard` to the bot (owners only; on Telegram in a private chat). It replies with a link like `http://192.168.1.20:8765/?key=…`. On the laptop, `.\scripts\bot_control.ps1 dashboard` prints the same link.
-2. The phone must be on the same Wi-Fi. The first time, allow the port through Windows Firewall: open PowerShell **as administrator** and run `.\scripts\bot_control.ps1 firewall`. It allows the port on Private networks only, so check that Windows treats your home Wi-Fi as Private (Settings › Network & internet › Wi-Fi › your network).
-3. After the first visit a cookie remembers the key, so you can bookmark `http://192.168.1.20:8765/` or add it to your home screen. If the laptop gets a new address from the router, send `/dashboard` again.
+1. Send `/dashboard` to the bot (owners only; on Telegram in a private chat). It replies with a link like `http://llmbot.local:8765/?key=…`, plus the same link by IP address as a fallback. On the laptop, `.\scripts\bot_control.ps1 dashboard` prints the same link.
+2. The phone must be on the same Wi-Fi. The first time, allow it through Windows Firewall: open PowerShell **as administrator** and run `.\scripts\bot_control.ps1 firewall`. It opens the dashboard port and mDNS (UDP 5353, for the name) on Private networks only, so Windows must treat your home Wi-Fi as Private (Settings › Network & internet › Wi-Fi › your network; the script tells you if it's Public).
+3. After the first visit a cookie remembers the key, so you can bookmark `http://llmbot.local:8765/` or add it to your home screen.
+
+**The name `llmbot.local`:** the bot announces it on the network over mDNS (like printers and Chromecasts), pointing at the laptop's current Wi-Fi address, and re-announces within a minute if that address changes. So the bookmark keeps working when the router hands the laptop a new IP. Change it with `DASHBOARD_NAME` (empty turns it off). iPhones, Macs, Windows, Linux and Android 12+ resolve `.local` names; if yours doesn't, use the IP link (and a DHCP reservation in your router keeps that IP fixed).
 
 **Security:** the dashboard shows your prompts and the bot's replies, so it needs the access key (`DASHBOARD_TOKEN`, or the random one in `data/dashboard.key`; delete that file and restart to change it). It only answers this PC, private LAN addresses and Tailscale (100.64.0.0/10); requests from public internet addresses are refused even with the key. It's plain HTTP, so someone on the same Wi-Fi who can watch the traffic could see what's on it: fine at home, not on a shared network. It's read-only: nothing on the page can start, stop or change anything. Set `DASHBOARD_HOST=127.0.0.1` to keep it to the laptop, or `DASHBOARD_PORT=0` to turn it off.
 

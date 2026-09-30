@@ -367,6 +367,8 @@ HISTORY_FILE = DATA_DIR / "history.json"
 DASHBOARD_PORT = int(_num("DASHBOARD_PORT", 8765))  # 0 = off
 DASHBOARD_HOST = _env("DASHBOARD_HOST", "0.0.0.0")  # 127.0.0.1 = this PC only
 DASHBOARD_TOKEN = _env("DASHBOARD_TOKEN")
+# Name announced on the local network (mDNS): http://llmbot.local:8765 instead of the IP. Empty = don't announce.
+DASHBOARD_NAME = _env("DASHBOARD_NAME", "llmbot")
 STORE: Any = store_mod.FileStore(DATA_DIR)
 
 _settings: dict[str, dict] = {}

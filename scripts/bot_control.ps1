@@ -144,18 +144,29 @@ switch ($Action) {
         $ips = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
             Where-Object { $_.IPAddress -notmatch "^(127\.|169\.254\.)" -and $_.PrefixOrigin -ne "WellKnown" } |
             Select-Object -ExpandProperty IPAddress
+        $name = Get-EnvValue "DASHBOARD_NAME"
+        if (-not (Select-String -Path (Join-Path $Dir ".env") -Pattern "^\s*DASHBOARD_NAME\s*=" -Quiet -ErrorAction SilentlyContinue)) { $name = "llmbot" }
         "On this PC:     http://127.0.0.1:$port/?key=$key"
-        foreach ($ip in $ips) { "On your Wi-Fi:  http://${ip}:$port/?key=$key" }
+        if ($name) { "On your Wi-Fi:  http://$($name.ToLower()).local:$port/?key=$key   (the name the bot announces)" }
+        foreach ($ip in $ips) { "By address:     http://${ip}:$port/?key=$key" }
         "The link holds the access key; don't share it. Phones can't connect? Run: .\scripts\bot_control.ps1 firewall (as administrator)"
         Start-Process "http://127.0.0.1:$port/?key=$key"
     }
     "firewall" {
         $port = Get-DashboardPort
         if (-not (Test-Admin)) { Write-Error "Run PowerShell as administrator for this one."; exit 1 }
-        Get-NetFirewallRule -DisplayName "LLM bot dashboard" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+        Get-NetFirewallRule -DisplayName "LLM bot dashboard*" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
         # Private networks only (home Wi-Fi). On networks Windows calls Public (cafes, hotels), it stays blocked.
         New-NetFirewallRule -DisplayName "LLM bot dashboard" -Direction Inbound -Protocol TCP -LocalPort $port `
             -Profile Private -Action Allow | Out-Null
-        "Allowed inbound TCP $port on Private networks. If your Wi-Fi is set to Public: Settings > Network & internet > Wi-Fi > (your network) > Private."
+        # mDNS: phones asking "where is llmbot.local?" (DASHBOARD_NAME)
+        New-NetFirewallRule -DisplayName "LLM bot dashboard (name)" -Direction Inbound -Protocol UDP -LocalPort 5353 `
+            -Profile Private -Action Allow | Out-Null
+        "Allowed inbound TCP $port and UDP 5353 (the llmbot.local name) on Private networks."
+        $public = Get-NetConnectionProfile | Where-Object NetworkCategory -eq "Public"
+        foreach ($n in $public) {
+            "Note: '$($n.Name)' is set to Public, so this doesn't apply there. If it's your home network, make it Private:"
+            "  Set-NetConnectionProfile -InterfaceAlias '$($n.InterfaceAlias)' -NetworkCategory Private"
+        }
     }
 }

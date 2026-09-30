@@ -37,6 +37,23 @@ async def main():
         assert not D.local_address(ip), ip
     check(True, "LAN / loopback / Tailscale allowed; public addresses refused")
 
+    print("== local name (mDNS)")
+    D.core, D._key = B, key
+    B.DASHBOARD_HOST = "0.0.0.0"
+    for name, want in [("llmbot", "llmbot.local"), ("My-Bot", "my-bot.local"), ("llmbot.local", "llmbot.local"),
+                       ("", None), ("bad name", None), ("-x", None)]:
+        B.DASHBOARD_NAME = name
+        assert D.mdns_host() == want, (name, D.mdns_host())
+    B.DASHBOARD_NAME, B.DASHBOARD_HOST = "llmbot", "127.0.0.1"
+    check(D.mdns_host() is None, "names validated; not announced when the dashboard is this-PC-only")
+    B.DASHBOARD_HOST = "0.0.0.0"
+    check(not D.links()[0].startswith("http://llmbot.local"), "links use the IP while the name isn't announced")
+    D._mdns_ip, D._runner = "192.168.1.5", object()  # as if announced and serving
+    text = D.link_text()
+    check(D.links()[0].startswith("http://llmbot.local:") and "older Android" in text and "http://llmbot.local:8765`"
+          not in text.split("\n")[1], "announced: the name comes first, IP as fallback")
+    D._mdns_ip = D._runner = None
+
     print("== activity events")
     r = B.add_reminder("in 2 hours", "take my meds", CH, OWNER)
     t = B.add_task("0 9 * * *", "morning news", "Morning news", CH, OWNER)

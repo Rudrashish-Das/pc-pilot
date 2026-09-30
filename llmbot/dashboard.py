@@ -13,6 +13,7 @@ import hmac
 import ipaddress
 import logging
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -98,7 +99,73 @@ def lan_ips() -> list[str]:
 def links() -> list[str]:
     host = core.DASHBOARD_HOST
     ips = ["127.0.0.1"] if host in ("127.0.0.1", "localhost", "::1") else (lan_ips() if host in ("0.0.0.0", "::", "") else [host])
-    return [f"http://{ip}:{core.DASHBOARD_PORT}/?key={_key}" for ip in ips]
+    names = [mdns_host()] if _mdns_ip and mdns_host() else []  # the name first, while it's announced
+    return [f"http://{h}:{core.DASHBOARD_PORT}/?key={_key}" for h in names + ips]
+
+
+# ---- local name (mDNS) ----------------------------------------------------------------------------------------
+# Announces <DASHBOARD_NAME>.local with only this PC's Wi-Fi/LAN address (Windows' own <hostname>.local also
+# lists link-local 169.254.x addresses, which phones sometimes pick). Re-announced when the address changes.
+
+_zc: Any = None  # zeroconf.asyncio.AsyncZeroconf while announcing
+_mdns_ip: str | None = None
+_mdns_task: asyncio.Task | None = None
+
+
+def mdns_host() -> str | None:
+    """'llmbot.local', or None when there's nothing to announce (no name, invalid name, or not on the LAN)."""
+    name = (core.DASHBOARD_NAME or "").strip().lower().removesuffix(".local")
+    if not name or core.DASHBOARD_HOST not in ("0.0.0.0", "::", ""):
+        return None
+    if not re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?", name):
+        log.warning("DASHBOARD_NAME %r isn't a valid name (letters, digits, hyphens); not announcing it", name)
+        return None
+    return f"{name}.local"
+
+
+def _primary_ip() -> str | None:
+    ip = lan_ips()[0]
+    return None if ip.startswith("127.") else ip
+
+
+async def _mdns_register(ip: str) -> None:
+    global _zc, _mdns_ip
+    from zeroconf import IPVersion, ServiceInfo
+    from zeroconf.asyncio import AsyncZeroconf
+
+    host = mdns_host()
+    info = ServiceInfo("_http._tcp.local.", f"{host.removesuffix('.local')} bot dashboard._http._tcp.local.",
+                       addresses=[socket.inet_aton(ip)], port=core.DASHBOARD_PORT, server=f"{host}.",
+                       properties={"path": "/"})
+    zc = AsyncZeroconf(interfaces=[ip], ip_version=IPVersion.V4Only)  # only the network the phone is on
+    await zc.async_register_service(info, allow_name_change=True)
+    _zc, _mdns_ip = zc, ip
+    log.info("Dashboard announced as http://%s:%s (%s)", host, core.DASHBOARD_PORT, ip)
+
+
+async def _mdns_unregister() -> None:
+    global _zc, _mdns_ip
+    zc, _zc, _mdns_ip = _zc, None, None
+    if zc is not None:
+        try:
+            await zc.async_unregister_all_services()
+        finally:
+            await zc.async_close()
+
+
+async def _mdns_loop() -> None:
+    """Announce, then check every minute that the address is still right (new Wi-Fi, new DHCP lease, waking up)."""
+    while True:
+        try:
+            ip = _primary_ip()
+            if ip != _mdns_ip:
+                await _mdns_unregister()
+                if ip:
+                    await _mdns_register(ip)
+        except Exception as e:  # e.g. UDP 5353 unavailable: the IP links keep working
+            log.warning("Couldn't announce the dashboard name %s: %s", mdns_host(), e)
+            await _mdns_unregister()
+        await asyncio.sleep(60)
 
 
 def _authed(request: web.Request) -> bool:
@@ -429,10 +496,20 @@ async def start(core_module) -> None:
     await web.TCPSite(_runner, core.DASHBOARD_HOST, core.DASHBOARD_PORT).start()
     log.info("Dashboard on http://%s:%s (%s); owners get the link with /dashboard",
              core.DASHBOARD_HOST, core.DASHBOARD_PORT, ", ".join(lan_ips()))
+    if mdns_host():
+        global _mdns_task
+        _mdns_task = asyncio.create_task(_mdns_loop())
 
 
 async def stop() -> None:
-    global _runner
+    global _runner, _mdns_task
+    if _mdns_task is not None:
+        _mdns_task.cancel()
+        _mdns_task = None
+    try:
+        await asyncio.wait_for(_mdns_unregister(), 5)  # says goodbye, so phones forget the name right away
+    except Exception:
+        pass
     if _runner is not None:
         await _runner.cleanup()
         _runner = None
@@ -442,11 +519,19 @@ def link_text(angle: bool = True) -> str:
     """What /dashboard replies (owners only; the link holds the access key). angle: Discord's <url> (no preview)."""
     if _runner is None:
         return "The dashboard isn't running (DASHBOARD_PORT=0, or it couldn't start: see the log)."
-    urls = links()
+    urls = links()[:3]
+    fmt = (lambda u: f"<{u}>") if angle else (lambda u: u)
+    host = mdns_host() if _mdns_ip else None
+    if host:
+        body = (f"{fmt(urls[0])}\nIf that name doesn't open (some older Android phones), use the address instead:\n"
+                + "\n".join(fmt(u) for u in urls[1:]))
+        after = f"after that, just `http://{host}:{core.DASHBOARD_PORT}` works (bookmark it)"
+    else:
+        body = "\n".join(fmt(u) for u in urls)
+        after = "after that the plain address works"
     return ("📊 **Dashboard**: open this on a phone or PC on the same Wi-Fi. It holds the access key, so don't "
-            "share it.\n" + "\n".join(f"<{u}>" if angle else u for u in urls[:3]) +
-            "\n-# The first visit stores a cookie; after that the plain address works. If it doesn't load, "
-            "allow the port in Windows Firewall: `scripts\\bot_control.ps1 firewall` (as admin).")
+            f"share it.\n{body}\n-# The first visit stores a cookie; {after}. If it doesn't load, set your Wi-Fi to "
+            "Private in Windows and run `scripts\\bot_control.ps1 firewall` once (as admin).")
 
 
 LOGIN = """<!doctype html><html lang="en"><head><meta charset="utf-8">
