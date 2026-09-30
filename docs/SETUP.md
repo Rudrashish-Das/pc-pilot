@@ -36,8 +36,8 @@ Log in once interactively, then quit. `claude --version` should work in a new te
 
 ## 4. Bot
 ```powershell
-git clone <this repo's URL> DiscordLLMBot
-cd DiscordLLMBot
+git clone https://github.com/Rudrashish-Das/pc-pilot.git
+cd pc-pilot
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
