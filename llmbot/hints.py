@@ -25,7 +25,7 @@ class Rule:
 RULES: list[Rule] = [
     # ---- local model server (Ollama / LM Studio / llama.cpp)
     Rule(r"model ['\"]?[\w.:/-]+['\"]? not found|model .{0,40}not found, try pulling|pull model manifest",
-         "The model `{model}` isn't installed on the server. Run `ollama pull {model}` on the laptop, or pick an "
+         "The model `{model}` isn't installed on the server. Run `ollama pull {model}` on the PC, or pick an "
          "installed model in /panel.", ("local", "claude")),
     Rule(r"requires more system memory|out of memory|cudaMalloc|CUDA error|failed to allocate|insufficient memory",
          "Not enough memory for this model. Send /unload, close GPU-heavy apps, or pick a smaller model in /panel. "
@@ -49,11 +49,11 @@ RULES: list[Rule] = [
     # ---- Claude Code
     Rule(r"No such file|WinError 2\b|FileNotFoundError|not recognized as an internal|claude.{0,20}not found|"
          r"Claude Code CLI not found",
-         "The Claude Code CLI wasn't found. Install it on the laptop (`irm https://claude.ai/install.ps1 | iex`) or "
+         "The Claude Code CLI wasn't found. Install it on the PC (`irm https://claude.ai/install.ps1 | iex`) or "
          "set CLAUDE_BIN in .env to the full path of claude.exe, then restart the bot.", ("claude",)),
     Rule(r"not logged in|please run /login|/login|invalid api key|authentication_error|oauth token (has )?expired|"
          r"invalid x-api-key|(?:HTTP|API Error:?|status(?: code)?:?|error code:?)\s*401\b",
-         "Claude Code isn't logged in on the laptop. Open a terminal there, run `claude`, log in (/login), quit, then "
+         "Claude Code isn't logged in on the PC. Open a terminal there, run `claude`, log in (/login), quit, then "
          "retry.", ("claude",)),
     Rule(r"credit balance is too low|insufficient credit|billing|payment required|(?:HTTP|API Error:?|status(?: code)?:?|error code:?)\s*402\b",
          "The Anthropic account is out of credit. Top it up at console.anthropic.com, or switch the backend to "
@@ -76,10 +76,10 @@ RULES: list[Rule] = [
          ("claude",)),
     Rule(r"ConnectError|connection refused|All connection attempts failed|ECONNREFUSED|Unable to connect",
          "Claude Code couldn't reach its model server. On the 🦙 Ollama backend, make sure Ollama is running; "
-         "otherwise check the laptop's internet connection.", ("claude",)),
+         "otherwise check the PC's internet connection.", ("claude",)),
     Rule(r"exited \(code|without a result|\(no output\)",
          "Claude Code stopped without an answer. Press 📄 Full log (or /log) to see why; running `claude -p hi` in a "
-         "terminal on the laptop shows setup problems directly.", ("claude",)),
+         "terminal on the PC shows setup problems directly.", ("claude",)),
 
     # ---- voice notes
     Rule(r"faster.?whisper|No module named",
@@ -94,12 +94,12 @@ RULES: list[Rule] = [
          "A shutdown or restart is already scheduled. Open /power and press ✖️ Cancel first.", ("power",)),
     Rule(r"Access is denied|\(5\)|privilege",
          "Windows refused. The bot must run as the signed-in user (scripts\\bot_control.ps1 start), and some "
-         "company-managed laptops block shutdown from apps.", ("power",)),
+         "company-managed PCs block shutdown from apps.", ("power",)),
 
     # ---- anywhere
     Rule(r"getaddrinfo failed|Name or service not known|nodename nor servname|Temporary failure in name resolution|"
          r"No address associated",
-         "The laptop can't resolve internet names (DNS). It's probably offline: check its Wi-Fi."),
+         "The PC can't resolve internet names (DNS). It's probably offline: check its Wi-Fi."),
     Rule(r"Missing Access|Missing Permissions|(?:HTTP|API Error:?|status(?: code)?:?|error code:?)\s*5000[13]\b",
          "The bot lacks permissions in this channel. Edit Channel → Permissions → add the bot with View Channel, "
          "Send Messages, Embed Links, Attach Files and Read Message History."),

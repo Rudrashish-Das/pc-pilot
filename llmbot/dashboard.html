@@ -262,7 +262,7 @@ dialog .row { justify-content: flex-end; }
           <input type="file" id="chat-files" multiple hidden>
           <input type="file" id="chat-audio" accept="audio/*" capture hidden>
           <button type="button" class="btn" id="chat-attach" title="Attach files">📎</button>
-          <button type="button" class="btn mic" id="chat-mic" title="Speak: turned into text on the laptop">🎙️</button>
+          <button type="button" class="btn mic" id="chat-mic" title="Speak: turned into text on the PC">🎙️</button>
           <textarea id="chat-input" rows="1" placeholder="Message the bot" enterkeyhint="send"></textarea>
           <button class="btn send" id="chat-send">Send</button>
         </form>
@@ -280,7 +280,7 @@ dialog .row { justify-content: flex-end; }
       <div class="card"><h2>Claude Code spend today</h2><div id="spend"></div></div>
       <div class="card"><h2>Models in memory</h2><div id="models"></div></div>
       <div class="card"><h2>Installed models</h2><div id="installed"></div></div>
-      <div class="card"><h2>Laptop</h2><div id="machine"></div></div>
+      <div class="card"><h2>PC</h2><div id="machine"></div></div>
       <div class="card"><h2>Bot</h2><div id="botinfo"></div></div>
       <div class="card"><h2>Coming up</h2><div id="next"></div></div>
       <div class="card latest"><h2>Latest</h2><div id="latest" class="list"></div></div>
@@ -458,7 +458,7 @@ function mergeEvents(list) {
 
 async function poll() {
   try {
-    // Off the Now tab, "lite": no GPU/CPU/model stats (the laptop skips nvidia-smi); the last ones are kept.
+    // Off the Now tab, "lite": no GPU/CPU/model stats (the PC skips nvidia-smi); the last ones are kept.
     const st = await getJSON("/api/state?since=" + S.lastId + (S.tab === "now" ? "" : "&lite=1"));
     S.skew = Date.now() / 1000 - st.now;
     S.state = { ...(S.state || {}), ...st };
@@ -468,7 +468,7 @@ async function poll() {
     render();
   } catch (err) {
     if (++S.failures >= 2) {
-      $("offline").textContent = "Can't reach the bot (" + err.message + "). It may be stopped, or the laptop is asleep. Retrying…";
+      $("offline").textContent = "Can't reach the bot (" + err.message + "). It may be stopped, or the PC is asleep. Retrying…";
       $("offline").classList.remove("hide");
       $("dot").className = "dot err";
     }
@@ -878,7 +878,7 @@ function applyChat(data) {
   }
   if ($("msgs").querySelector(".msg")) $("msgs").querySelector(":scope > .empty")?.remove();
   else put($("msgs"), h("div", { class: "empty", style: "text-align:center;margin-top:30px" },
-    "Say hi. This chat runs on the laptop over your Wi-Fi, so the local model works even without internet.", h("br"), h("br"), "Type /help for commands."));
+    "Say hi. This chat runs on the PC over your Wi-Fi, so the local model works even without internet.", h("br"), h("br"), "Type /help for commands."));
   renderWorking();
   if (stick) toBottom();
 }
@@ -1021,7 +1021,7 @@ $("chat-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !matchMedia("(pointer: coarse)").matches) { e.preventDefault(); sendChat(e); }
 });
 
-// voice input: record -> the laptop's Whisper -> text in the box (edit, then send). Browsers only allow the
+// voice input: record -> the PC's Whisper -> text in the box (edit, then send). Browsers only allow the
 // microphone on https (or localhost); on plain http the button opens the phone's own recorder instead.
 C.rec = null;
 const canRecord = () => window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder;

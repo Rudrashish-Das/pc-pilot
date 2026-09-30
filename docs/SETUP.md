@@ -52,7 +52,7 @@ Invite the bot to the other server, using the Discord Developer Portal → your 
 - list them all: `GUILD_ID=111111,222222` — commands appear instantly in each; or
 - leave `GUILD_ID` empty — global commands, in every server the bot is in and in DMs (new/changed commands can take a while to show).
 
-Restart the bot after changing it. It removes leftover copies so commands never show twice. Access is still controlled by `ALLOWED_USER_IDS` / `OWNER_IDS`, not by the server: people in other servers are ignored unless they're listed, and only owners get Claude Code (which runs on this laptop, in your workspace).
+Restart the bot after changing it. It removes leftover copies so commands never show twice. Access is still controlled by `ALLOWED_USER_IDS` / `OWNER_IDS`, not by the server: people in other servers are ignored unless they're listed, and only owners get Claude Code (which runs on this PC, in your workspace).
 
 ## Telegram (optional)
 Telegram is a second front end on the same bot, in the same process: engines, models, Claude Code sessions, reminders, scheduled prompts, budgets and the GPU queue are shared. Each Telegram chat has its own settings and session, like a Discord channel.
@@ -77,7 +77,7 @@ Using it:
 This adds a **Discord LLM Bot** entry, with the logo, to Startup apps. You can enable or disable it in Task Manager. The entry runs `bin\DiscordLLMBot.exe`, a small launcher that `install` compiles from `scripts\launcher.cs` using the C# compiler built into Windows. Task Manager lists a startup entry under the name of the program it runs, so without the launcher the entry would show as "Python". The bot runs with no window and logs to `data\bot.log`. Other commands: `start`, `stop`, `restart`, `status`, `log`, `remove`. After pulling updates, run `restart`. If PowerShell blocks the script, run `powershell -ExecutionPolicy Bypass -File .\scripts\bot_control.ps1 install`.
 
 ### Start at boot, before anyone signs in
-Startup apps wait for someone to sign in. For the bot to come back after `/power` → Restart, or after a power cut, while the laptop sits at the lock screen, run this once in PowerShell as administrator:
+Startup apps wait for someone to sign in. For the bot to come back after `/power` → Restart, or after a power cut, while the PC sits at the lock screen, run this once in PowerShell as administrator:
 ```powershell
 .\scripts\bot_control.ps1 boot
 ```
@@ -95,7 +95,7 @@ Startup apps wait for someone to sign in. For the bot to come back after `/power
 - On the Claude Code engine, each channel keeps one ongoing conversation (`CC_CONTINUE=true`). Use **🆕 New CC session** in `/panel` to start fresh.
 
 ## Voice notes
-- Hold the mic button in Discord (phone or desktop) and send a voice note in the bot's channel. It's transcribed on this laptop and answered like a typed message. The reply starts with a small grey `heard: "…"` line.
+- Hold the mic button in Discord (phone or desktop) and send a voice note in the bot's channel. It's transcribed on this PC and answered like a typed message. The reply starts with a small grey `heard: "…"` line.
 - `/panel` → ⚙️ Settings → **Voice notes**: *answer all* (default), *replies only* (only voice notes sent as a reply to the bot) or *off*. DMs to the bot are always answered.
 - The first voice note downloads the Whisper model once (~460 MB). It runs on the CPU so Ollama keeps the GPU, and unloads after `LLM_IDLE_UNLOAD` seconds idle, like the local LLM. Notes longer than `VOICE_MAX_SECONDS` (180) are refused.
 
@@ -112,7 +112,7 @@ Just ask: "remind me to take my meds in 10 min", "remind me at 6pm to call mum",
 - Under the reply you get a grey line with the confirmed time, shown in your own timezone. That line comes from the bot, not the model.
 - When it's due, the bot posts in the same channel and pings **only you** (it never pings roles or @everyone). It has ✅ Done and 💤 10 min buttons.
 - `/tasks` (or ⏰ in `/panel`) lists and cancels reminders and recurring tasks. Only you see the list, and it shows only your own (owners see everyone's). For repeating reminders use `/schedule` or ask for one ("every day at 9pm").
-- Reminders are kept in `data/reminders.json` and survive restarts. One that was due while the bot was off or the laptop was asleep is sent as soon as the bot is back, marked late.
+- Reminders are kept in `data/reminders.json` and survive restarts. One that was due while the bot was off or the PC was asleep is sent as soon as the bot is back, marked late.
 
 ## Scheduled prompts
 
@@ -137,7 +137,7 @@ Each task keeps the engine and model it was created with. A task the local model
 The local model always gets only web search and page fetch, plus reminders if they're allowed. The owner who allowed Claude Code, more than read-only, or reminders is recorded with the task and checked again on every run. If that person is no longer in `OWNER_IDS`, and the creator isn't an owner either, the task falls back to the local model, read-only, and says so.
 - Every message to Claude Code starts with the current date and time in `TIMEZONE`, so "today", "tonight" and "8am" mean your time, not UTC.
 
-## Laptop power (`/power`)
+## PC power (`/power`)
 
 Owners only, on Windows. `/power` offers five actions:
 - **🔒 Lock:** immediate. Everything keeps running.
@@ -145,18 +145,18 @@ Owners only, on Windows. `/power` offers five actions:
 
 - **Restart and shut down** wait 30 seconds, like `shutdown /t 30`. Open `/power` again and press ✖️ **Cancel** to stop it.
 - **Back-up notice:** the bot posts in the chat where you asked, and pings only you, when it's up again:
-  - after sleep or hibernate, as soon as the laptop wakes and the network is back;
+  - after sleep or hibernate, as soon as the PC wakes and the network is back;
   - after a restart, about a minute after Windows starts, if the bot starts at boot (`bot_control.ps1 boot`, see [Start at boot](#start-at-boot-before-anyone-signs-in)). With only the Startup apps entry, it's once someone signs in.
 
   `/power` says which of these applies, and tells you how to fix it if the bot won't come back on its own.
-- **Turning the laptop on** isn't possible from chat, because nothing is running to receive the message. The same goes for waking it from sleep: someone has to open the lid or press a key or the power button.
-- **If a requested action never happened**, for example a restart that was cancelled on the laptop itself, the bot says so after a few minutes.
+- **Turning the PC on** isn't possible from chat, because nothing is running to receive the message. The same goes for waking it from sleep: someone has to press a key, move the mouse or press the power button (or open a laptop's lid).
+- **If a requested action never happened**, for example a restart that was cancelled on the PC itself, the bot says so after a few minutes.
 - **It's never a model tool:** neither the local model nor Claude Code can trigger it. Only the `/power` buttons can, after the owner check.
 
 ## Web dashboard
 
 A page served by the bot itself (on by default, port 8765) that shows:
-- **Now:** the running Claude Code job with its live tool steps, local-model replies and voice notes in progress, jobs waiting in line, a pending power action, today's spend against `CC_DAILY_BUDGET_USD`, the models Ollama has in memory (size, % on GPU, when they unload), the laptop's CPU load, GPU load, memory, GPU memory and temperature, battery and disk, whether Discord and Telegram are connected, and what's coming up next.
+- **Now:** the running Claude Code job with its live tool steps, local-model replies and voice notes in progress, jobs waiting in line, a pending power action, today's spend against `CC_DAILY_BUDGET_USD`, the models Ollama has in memory (size, % on GPU, when they unload), the PC's CPU load, GPU load, memory, GPU memory and temperature, battery and disk, whether Discord and Telegram are connected, and what's coming up next.
 - **Activity:** everything the bot did, newest first and grouped by day: local and Claude Code replies (with the reply, time taken, tools, cost), reminders set/fired/cancelled, scheduled prompts created and run, power actions, model unloads, sleep/resume, start/stop, and every warning or error from the log. Filter by kind, search, tap an entry for details, and load older entries. Kept in `data/events.jsonl` (or the `llmbot_events` table on Postgres), so it survives restarts.
 - **Claude jobs:** every Claude Code job with outcome, model, cost, duration and turns.
 - **Scheduled:** reminders and scheduled prompts with countdowns.
@@ -165,13 +165,13 @@ A page served by the bot itself (on by default, port 8765) that shows:
 It refreshes every 3 seconds while open and pauses when the tab is in the background.
 
 **Opening it on your phone**
-1. Send `/dashboard` to the bot (owners only; on Telegram in a private chat). It replies with a link like `http://llmbot.local:8765/?key=…`, plus the same link by IP address as a fallback. On the laptop, `.\scripts\bot_control.ps1 dashboard` prints the same link.
+1. Send `/dashboard` to the bot (owners only; on Telegram in a private chat). It replies with a link like `http://llmbot.local:8765/?key=…`, plus the same link by IP address as a fallback. On the PC, `.\scripts\bot_control.ps1 dashboard` prints the same link.
 2. The phone must be on the same Wi-Fi. The first time, allow it through Windows Firewall: open PowerShell **as administrator** and run `.\scripts\bot_control.ps1 firewall`. It opens the dashboard port and mDNS (UDP 5353, for the name) on Private networks only, so Windows must treat your home Wi-Fi as Private (Settings › Network & internet › Wi-Fi › your network; the script tells you if it's Public).
 3. After the first visit a cookie remembers the key, so you can bookmark `http://llmbot.local:8765/` or add it to your home screen.
 
-**The name `llmbot.local`:** the bot announces it on the network over mDNS (like printers and Chromecasts), pointing at the laptop's current Wi-Fi address, and re-announces within a minute if that address changes. So the bookmark keeps working when the router hands the laptop a new IP. Change it with `DASHBOARD_NAME` (empty turns it off). iPhones, Macs, Windows, Linux and Android 12+ resolve `.local` names; if yours doesn't, use the IP link (and a DHCP reservation in your router keeps that IP fixed).
+**The name `llmbot.local`:** the bot announces it on the network over mDNS (like printers and Chromecasts), pointing at the PC's current Wi-Fi address, and re-announces within a minute if that address changes. So the bookmark keeps working when the router hands the PC a new IP. Change it with `DASHBOARD_NAME` (empty turns it off). iPhones, Macs, Windows, Linux and Android 12+ resolve `.local` names; if yours doesn't, use the IP link (and a DHCP reservation in your router keeps that IP fixed).
 
-**Security:** the dashboard shows your prompts and the bot's replies, so it needs the access key (`DASHBOARD_TOKEN`, or the random one in `data/dashboard.key`; delete that file and restart to change it). It only answers this PC, private LAN addresses and Tailscale (100.64.0.0/10); requests from public internet addresses are refused even with the key. It's plain HTTP, so someone on the same Wi-Fi who can watch the traffic could see what's on it: fine at home, not on a shared network. The status tabs only read; the **Chat** tab (below) acts as you. Set `DASHBOARD_HOST=127.0.0.1` to keep it to the laptop, or `DASHBOARD_PORT=0` to turn it off.
+**Security:** the dashboard shows your prompts and the bot's replies, so it needs the access key (`DASHBOARD_TOKEN`, or the random one in `data/dashboard.key`; delete that file and restart to change it). It only answers this PC, private LAN addresses and Tailscale (100.64.0.0/10); requests from public internet addresses are refused even with the key. It's plain HTTP, so someone on the same Wi-Fi who can watch the traffic could see what's on it: fine at home, not on a shared network. The status tabs only read; the **Chat** tab (below) acts as you. Set `DASHBOARD_HOST=127.0.0.1` to keep it to the PC, or `DASHBOARD_PORT=0` to turn it off.
 
 ### Chat from the dashboard
 
@@ -179,7 +179,7 @@ The **Chat** tab is a third way to talk to the bot, next to Discord and Telegram
 
 - Each chat has its own engine, model, Claude Code session and memory. ⚙️ opens `/panel` right in the chat: its menus and buttons work like on Discord, and so do confirmations, Stop, reminders' ✅/💤 and `/tasks`. Other commands: `/help`, `/claude`, `/local`, `/new`, `/compact`, `/stop`, `/remind`, `/reset`, `/unload`, `/power`.
 - Type `/` to see the commands with what they do; tap one (or use the arrow keys and Tab/Enter). Commands without arguments run right away.
-- 🎙️ **Voice input:** tap to record, tap again to stop. The recording is turned into text on the laptop by the same local Whisper as voice notes (nothing goes to the internet), and lands in the message box so you can fix it before sending. Phones only allow the microphone on **https** pages, so for voice open the https link from `/dashboard` (`https://llmbot.local:8766`, `DASHBOARD_HTTPS_PORT`). Its certificate is made by the laptop itself, so each device warns once ("not private"): choose Advanced → Continue (Android) or Show Details → visit this website (iPhone). On the plain http page, 🎙️ opens your phone's own voice recorder instead and uploads what you record.
+- 🎙️ **Voice input:** tap to record, tap again to stop. The recording is turned into text on the PC by the same local Whisper as voice notes (nothing goes to the internet), and lands in the message box so you can fix it before sending. Phones only allow the microphone on **https** pages, so for voice open the https link from `/dashboard` (`https://llmbot.local:8766`, `DASHBOARD_HTTPS_PORT`). Its certificate is made by the PC itself, so each device warns once ("not private"): choose Advanced → Continue (Android) or Show Details → visit this website (iPhone). On the plain http page, 🎙️ opens your phone's own voice recorder instead and uploads what you record.
 - 📎 attaches images, PDFs and code for Claude Code. Files the bot sends back appear in the chat (images inline, others as downloads) and are kept 30 days in `data/webchat_files`.
 - While Claude Code works, the chat shows its steps live. Chats and their last 300 messages are kept (in `data/webchat.json`, or Postgres), up to 50 chats. Buttons stop working when the bot restarts, as on Discord.
 - **Who you are there:** `DASHBOARD_CHAT=owner` (default) makes whoever has the access key an owner: Claude Code (if you've set `OWNER_IDS`, which turns Claude Code on at all) and `/power`. `user` gives only the local model; `off` hides the chat.

@@ -64,7 +64,7 @@ async def main():
     print("== restart: confirm, command, cancel")
     bt = await open_power(tg)
     await tg._dispatch(tap(OWNER, bt["🔁 Restart"]))
-    check(not cmds and "Restart the laptop?" in edits(tg)[-1], "asks to confirm first")
+    check(not cmds and "Restart the PC?" in edits(tg)[-1], "asks to confirm first")
     conf = confirm_buttons(tg)
     await tg._dispatch(tap(OWNER, conf["🔁 Yes, restart"]))
     check(cmds[-1][:4] == ("shutdown", "/r", "/t", str(B.POWER_DELAY)), f"runs shutdown /r /t 30: {cmds[-1]}")
@@ -112,7 +112,7 @@ async def main():
     check(suspends == [False], "sleeps (not hibernate) after a short delay")
     watch = asyncio.create_task(B.power_watch())
     await asyncio.sleep(0.2)
-    B._power_tick -= 600  # as if the laptop was asleep for 10 minutes
+    B._power_tick -= 600  # as if the PC was asleep for 10 minutes
     await asyncio.sleep(10.5)
     check("Awake again after sleep (offline for about 10m" in tg.last_text() and not B.POWER_FILE.exists(),
           f"wake noticed: {tg.last_text()!r}")

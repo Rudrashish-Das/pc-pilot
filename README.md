@@ -42,8 +42,8 @@ One bot process, two front ends. Both share one backend: engines, Claude Code se
   - a per-message cost breakdown.
 - **Frees the GPU:** idle models are unloaded (`/unload` does it right away).
 - **Storage:** JSON files in `data/` with no setup, or a Postgres database if you set `DATABASE_URL`. Either way it holds settings, tasks, reminders, spend, the local model's chat memory and a history of every Claude Code job with its cost.
-- **Web dashboard** for your phone: what the bot is doing right now (live Claude Code progress, local replies, voice notes), a searchable history of everything it did, Claude Code jobs with their cost, today's spend against the cap, upcoming reminders and scheduled prompts, models in GPU memory, the laptop's RAM/GPU/battery, and the log. Served by the bot itself on your local network, behind an access key. `/dashboard` gives owners the link. Its **Chat** tab talks to the bot over the same Wi-Fi, so the local model still answers when the internet is down.
-- **Laptop power from chat** (`/power`, owners only): lock, sleep, hibernate, restart or shut down, with a confirmation step. The bot posts in the chat when it's back up.
+- **Web dashboard** for your phone: what the bot is doing right now (live Claude Code progress, local replies, voice notes), a searchable history of everything it did, Claude Code jobs with their cost, today's spend against the cap, upcoming reminders and scheduled prompts, models in GPU memory, the PC's RAM/GPU/battery, and the log. Served by the bot itself on your local network, behind an access key. `/dashboard` gives owners the link. Its **Chat** tab talks to the bot over the same Wi-Fi, so the local model still answers when the internet is down.
+- **PC power from chat** (`/power`, owners only): lock, sleep, hibernate, restart or shut down, with a confirmation step. The bot posts in the chat when it's back up.
 
 ## Security model
 
@@ -205,7 +205,7 @@ You should see `Logged in as YourBot#1234`, and `Telegram: logged in as @yourbot
 .\scripts\bot_control.ps1 start     # starts it now, with no window
 ```
 
-Startup apps only run once someone signs in. So after `/power` → Restart, the laptop would sit at the lock screen with the bot offline. To have it start at boot instead, run this once in PowerShell **as administrator**:
+Startup apps only run once someone signs in. So after `/power` → Restart, the PC would sit at the lock screen with the bot offline. To have it start at boot instead, run this once in PowerShell **as administrator**:
 
 ```powershell
 .\scripts\bot_control.ps1 boot
@@ -250,7 +250,7 @@ Your settings, tasks, reminders and logs are in `data/` (or your Postgres databa
 | Scheduled prompts | "every weekday at 9 give me a news brief" or `/schedule` | same, or `/schedule 0 9 * * 1-5 \| prompt` |
 | List and cancel them, or choose the model a task runs on and what it may do | `/tasks` | `/tasks` |
 | Free the GPU | `/unload` | `/unload` |
-| Lock / sleep / hibernate / restart / shut down the laptop (owners) | `/power` | `/power` |
+| Lock / sleep / hibernate / restart / shut down the PC (owners) | `/power` | `/power` |
 | Web dashboard link (owners) | `/dashboard` | `/dashboard` (private chat) |
 
 Voice notes, images and files work on both. See [docs/SETUP.md](docs/SETUP.md) for how each feature behaves and what it costs.
@@ -265,7 +265,7 @@ Voice notes, images and files work on both. See [docs/SETUP.md](docs/SETUP.md) f
 | Telegram answers nothing | Your id must be in `TELEGRAM_ALLOWED_USER_IDS` (send `/start` to get it), then restart. |
 | The Claude Code engine is missing | You're not an owner: set `OWNER_IDS` (with no owners at all, Claude Code is off). Or `claude` isn't found: set `CLAUDE_BIN`. |
 | The local model is slow | Run `ollama ps`. If it isn't 100% GPU, try the [Ollama tuning](docs/SETUP.md#ollama-tuning-optional) settings, or use a smaller model or context. |
-| The dashboard doesn't load on the phone | Same Wi-Fi as the laptop? Run `.\scripts\bot_control.ps1 firewall` once as administrator, and set the Wi-Fi to Private in Windows settings. If `llmbot.local` doesn't open but the IP link does, your phone doesn't support `.local` names (older Android): use the IP link. |
+| The dashboard doesn't load on the phone | Same Wi-Fi as the PC? Run `.\scripts\bot_control.ps1 firewall` once as administrator, and set the Wi-Fi to Private in Windows settings. If `llmbot.local` doesn't open but the IP link does, your phone doesn't support `.local` names (older Android): use the IP link. |
 | "Another copy of the bot is already running" | Run `.\scripts\bot_control.ps1 stop` first. |
 | Anything else | Check `data\bot.log`, or run `.\scripts\bot_control.ps1 log`. |
 

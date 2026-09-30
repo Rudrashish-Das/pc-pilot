@@ -486,7 +486,7 @@ class WebFrontend:
                 await out(content=f"💤 Unloaded: {', '.join(f'`{m}`' for m in done)}" if done else "💤 Nothing to unload.")
         elif cmd == "power":
             if not core.is_owner(uid):
-                await out(content="⛔ Only owners can control the laptop.")
+                await out(content="⛔ Only owners can control the PC.")
             elif not core.power_supported():
                 await out(content="Power controls only work when the bot runs on Windows.")
             else:
@@ -559,7 +559,7 @@ COMMANDS = [  # (name, arguments, what it does): for /help and the page's autoco
     ("remind", "<when> | <what>", "One-time reminder, e.g. in 10 min | take meds"),
     ("reset", "", "Clear the local model's chat memory"),
     ("unload", "", "Free GPU memory now"),
-    ("power", "", "Lock, sleep, restart or shut down the laptop"),
+    ("power", "", "Lock, sleep, restart or shut down the PC"),
     ("help", "", "How this chat works"),
 ]
 
@@ -569,7 +569,7 @@ HELP = ("**Chatting from the dashboard**\n"
         "session, set in ⚙️ /panel.\n\n**Commands** (type / to pick one)\n"
         + "\n".join(f"/{n}{' ' + a if a else ''}: {d}" for n, a, d in COMMANDS)
         + "\n\n📎 Attach images, PDFs and code for Claude Code. 🎙️ The mic button turns speech into text, "
-          "transcribed on the laptop.")
+          "transcribed on the PC.")
 
 
 def start(core_module) -> WebFrontend:

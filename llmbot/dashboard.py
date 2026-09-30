@@ -544,7 +544,7 @@ def _chat_api(fn):
 
 
 async def chat_transcribe(request, fe, chat) -> dict:
-    """Voice input: a recording from the page -> text, with the bot's local Whisper (nothing leaves the laptop)."""
+    """Voice input: a recording from the page -> text, with the bot's local Whisper (nothing leaves the PC)."""
     if not core.VOICE_ENABLED:
         return {"error": "Voice is off (VOICE_ENABLED=false)."}
     data = b""
@@ -688,7 +688,7 @@ def cert_hosts() -> tuple[list[str], list[str]]:
 
 def tls_context():
     """An SSL context with a self-signed certificate from data/, made on first use and again when the LAN address
-    isn't in it any more (browsers warn once per device either way: nobody vouches for a home laptop)."""
+    isn't in it any more (browsers warn once per device either way: nobody vouches for a home PC)."""
     import datetime as dt
     import ssl
 
@@ -798,7 +798,7 @@ def link_text(angle: bool = True) -> str:
     if _https_on and urls:
         secure = urls[0].replace("http://", "https://", 1).replace(f":{core.DASHBOARD_PORT}/", f":{core.DASHBOARD_HTTPS_PORT}/", 1)
         voice = (f"\n🎙️ To talk to it (voice input in the chat), use {fmt(secure)}: phones only allow the microphone "
-                 "on https. Accept the browser's warning once (the certificate is the laptop's own).")
+                 "on https. Accept the browser's warning once (the certificate is the PC's own).")
     return ("📊 **Dashboard**: open this on a phone or PC on the same Wi-Fi. It holds the access key, so don't "
             f"share it.\n{body}{voice}\n-# The first visit stores a cookie; {after}. If it doesn't load, set your "
             "Wi-Fi to Private in Windows and run `scripts\\bot_control.ps1 firewall` once (as admin).")
