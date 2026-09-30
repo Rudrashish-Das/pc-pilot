@@ -72,6 +72,12 @@ The steps are written for **Windows** (the bot is developed on Windows 11). Linu
 
 You need at least one engine. The easiest free start is Ollama. The most capable is Claude Code.
 
+**Discord, Telegram, or both:** set up only the platform(s) you want:
+- Discord only: do step 2 and skip step 3.
+- Telegram only: skip step 2, do step 3, and leave `DISCORD_TOKEN` empty.
+
+The bot starts whatever has a token, and every feature works on either platform.
+
 ### 1. Download and install
 
 ```powershell

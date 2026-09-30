@@ -15,7 +15,8 @@ LIVE = os.getenv("LLMBOT_LIVE") == "1"
 os.environ["LLMBOT_ENV_FILE"] = str(TMP / "none.env")  # doesn't exist: only the defaults and os.environ apply
 os.environ["LLMBOT_DATA_DIR"] = str(TMP / "data")
 os.environ.setdefault("TIMEZONE", "Asia/Kolkata")  # the suites' expected times are written in IST
-os.environ["DISCORD_TOKEN"] = "fake-token-for-tests"  # never used to connect; makes Discord the front end for its ids
+# Never used to connect; makes Discord the front end for its ids. A suite can set DISCORD_TOKEN="" first (Telegram only).
+os.environ.setdefault("DISCORD_TOKEN", "fake-token-for-tests")
 sys.path.insert(0, str(ROOT))
 
 import llmbot.core as B  # noqa: E402
