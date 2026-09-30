@@ -51,7 +51,7 @@ One bot process, two front ends. Both share one backend: engines, Claude Code se
 - **No shell for the local model**, ever. `fetch_page` has SSRF protection that blocks private, loopback and link-local addresses, including after redirects.
 - **Claude Code's permission profiles:**
   - `read` and `edit` can only reach the workspace, with no shell.
-  - `full` asks for confirmation for every job.
+  - `full` asks for confirmation for every job, unless an owner turns on ☠️ **Full access without asking** for that chat. That's opt-in, time-limited or until turned off, and never available for the local model.
 - **Secrets stay out of output:**
   - Tokens are removed from Claude Code's environment.
   - Everything posted to chat is redacted first: known secret values, common token formats and your home path.

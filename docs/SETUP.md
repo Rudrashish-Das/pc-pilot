@@ -212,7 +212,12 @@ Then quit Ollama from the system tray and start it again. Its log (`%LOCALAPPDAT
 - **Workspaces:** Claude Code can only run inside folders listed in `WORKSPACES`. Don't whitelist this bot's own folder, because its `.env` holds your Discord token. The bot removes its own secrets from Claude Code's environment, but it can't hide files on disk.
 - **Permission profiles:**
   - `read` and `edit` deny anything outside their allow-list without prompting. Blocked actions appear on the result card.
-  - `full` uses `bypassPermissions` and always asks for confirmation before running.
+  - `full` uses `bypassPermissions` and asks for confirmation before each job.
+  - **☠️ Full access without asking** (`/panel` → ⚙️ Settings, owners only): an owner's own Claude Code messages in that chat then run with full access right away, with no confirmation card.
+    - Turning it on asks once: **for 12 hours** or **until I turn it off**.
+    - It turns off when the chat leaves full access or switches to the Ollama backend. One tap on "Ask again" turns it off.
+    - Still asked first: jobs the local model proposes (Auto engine). It's never available on Ollama, because the local model never gets a shell without you approving each job. Scheduled tasks keep their own permissions.
+    - The risk: Claude Code reads web pages and files you don't control, and hidden instructions in them could run commands without you seeing the task first.
 - **Cron:** schedules use 5 fields in `TIMEZONE`, with standard numbering (0 = Sunday). For example, `0 9 * * 1-5` runs at 09:00 on weekdays. Tasks must be at least 15 minutes apart, with a maximum of 20.
 - **Where the bot keeps things:** by default, files in `data/` (not in git). That covers:
   - `settings.json` (per-channel settings), `tasks.json`, `reminders.json`, `usage.json` (daily spend);

@@ -294,7 +294,7 @@ ENGINES = {"local": ("💻", "Local"), "claude": ("🤖", "Claude Code"), "auto"
 PERMS = {
     "read": ("🔍", "Read-only", "Read/search files in the workspace + web. No shell."),
     "edit": ("✏️", "Edit", "Read-only + edit/create files in the workspace. No shell."),
-    "full": ("⚠️", "Full access", "bypassPermissions: any command. Always confirms."),
+    "full": ("⚠️", "Full access", "Any command, anywhere on this PC. Asks before each job."),
 }
 BACKENDS = {
     "anthropic": ("☁️", "Anthropic", "Your normal claude login"),
@@ -405,6 +405,7 @@ def default_settings() -> dict:
         "style": REPLY_STYLE,  # chat | cards
         "voice": VOICE_DEFAULT,  # all | replies | off
         "tg_stats": "spoiler",  # Telegram only: the stats line as a tap-to-reveal spoiler, or "off"
+        "cc_no_ask_until": None,  # full access without a confirmation card until this epoch time (see no_ask_until)
     }
 
 
@@ -422,9 +423,29 @@ def update_settings(channel_id: int, **changes) -> dict:
     ):
         changes.setdefault("cc_session", None)  # session is tied to backend + workspace
     s.update(changes)
+    if s.get("cc_no_ask_until") and (s["cc_perm"] != "full" or s["cc_backend"] == "ollama"):
+        s["cc_no_ask_until"] = None  # leaving full access (or moving to the local model) ends "without asking"
     _settings[str(channel_id)] = s
     STORE.save("settings", SETTINGS_FILE, _settings)
     return s
+
+
+NO_ASK_FOREVER = 32503680000.0  # year 3000: "until you turn it off" (jsonb has no Infinity)
+
+
+def no_ask_until(channel_id: int) -> float | None:
+    """When this chat's "full access without asking" ends (epoch), or None when it's off or doesn't apply. Only with
+    full access, and never on the Ollama backend: the local model never gets a shell without a person approving."""
+    s = get_settings(channel_id)
+    until = s.get("cc_no_ask_until")
+    if not until or s["cc_perm"] != "full" or s["cc_backend"] == "ollama" or time.time() >= until:
+        return None
+    return float(until)
+
+
+def no_ask_text(until: float) -> str:
+    return ("until you turn it off" if until >= NO_ASK_FOREVER - 1
+            else f"until {discord.utils.format_dt(datetime.fromtimestamp(until, TZ), 't')}")
 
 
 # =============================================================================
@@ -2801,7 +2822,7 @@ def panel_embed(channel_id: int) -> discord.Embed:
     e.add_field(name="Local status", value=("🔴 busy" if _llm_lock.locked() else "🟢 idle") + memory_status(s["local_model"]))
     e.add_field(name="Claude Code", value=f"{BACKENDS[s['cc_backend']][0]} {s['cc_backend']} · `{s['cc_model']}`")
     p = PERMS[s["cc_perm"]]
-    e.add_field(name="Permissions", value=f"{p[0]} {p[1]}")
+    e.add_field(name="Permissions", value=f"{p[0]} {p[1]}" + (" · ☠️ doesn't ask" if no_ask_until(channel_id) else ""))
     e.add_field(name="Workspace", value=f"`{s['workspace']}`")
     sid, why = session_state(s)
     if sid:
@@ -2975,7 +2996,8 @@ def perm_help(missing: list[str]) -> str:
 
 async def request_cc(channel, user_id: int, task: str, snap: CCSnap, out: Out, *, force_confirm: bool = False,
                      reason: str | None = None, chat: bool = False) -> None:
-    """Start a Claude Code job, or show a confirmation card (always for full access)."""
+    """Start a Claude Code job, or show a confirmation card (for full access, unless an owner turned on "without
+    asking" for this chat; proposals from the local model never come through here, so they always ask)."""
     missing = missing_perms(channel, out.interaction)
     if missing:  # progress/result cards are channel messages, so check before starting anything
         await out(content=perm_help(missing))
@@ -2983,9 +3005,13 @@ async def request_cc(channel, user_id: int, task: str, snap: CCSnap, out: Out, *
     if blocked := budget_block(snap):
         await out(content=blocked)
         return
-    if force_confirm or snap.perm == "full":
+    no_ask = (snap.perm == "full" and snap.backend != "ollama" and is_owner(user_id)
+              and no_ask_until(channel.id) is not None)
+    if force_confirm or (snap.perm == "full" and not no_ask):
         await out(embed=confirm_embed(task, snap, reason), view=CCConfirmView(channel.id, task, snap, reason))
         return
+    if no_ask:
+        log.info("Full access without asking in %s (owner %s)", channel.id, user_id)
     job = await start_cc_job(channel, task, snap, user_id, out=out, chat=chat)
     if out.interaction is not None and not chat:  # chat mode: the slash command's "thinking…" becomes the reply
         await out(content=f"🤖 Claude Code job `{job.id}` started ↓")
@@ -3300,6 +3326,11 @@ def perm_embed(channel_id: int) -> discord.Embed:
         e.add_field(name="Stats line", value="**Tap to reveal**: hidden behind a spoiler under each reply"
                     if s["tg_stats"] != "off" else "**Off**: not shown (warnings still are)", inline=False)
     e.add_field(name="Permissions", value=f"{p[0]} **{p[1]}**: {p[2]}", inline=False)
+    if s["cc_perm"] == "full":
+        until = no_ask_until(channel_id)
+        e.add_field(name="Confirmation", inline=False, value=(
+            f"☠️ **Doesn't ask**, {no_ask_text(until)}: your Claude Code messages run right away" if until else
+            "Asks before every Claude Code job" + (" (on Ollama it always asks)" if s["cc_backend"] == "ollama" else "")))
     e.add_field(name="Workspace", value=redact(f"`{s['workspace']}` → `{WORKSPACES[s['workspace']]}`"), inline=False)
     e.set_footer(text="Changing the workspace starts a new Claude Code session.")
     return e
@@ -3336,6 +3367,12 @@ class PermView(GuardedView):
         back = discord.ui.Button(custom_id="pv:back", label="Back to panel", emoji="⬅️", style=discord.ButtonStyle.primary)
         back.callback = self.on_back
         self.add_item(back)
+        if s["cc_backend"] != "ollama":  # the local model never gets a shell without a person approving each job
+            on = no_ask_until(channel_id) is not None
+            noask = discord.ui.Button(custom_id="pv:noask", emoji="☠️", style=discord.ButtonStyle.danger,
+                                      label="Ask again before full access" if on else "Full access without asking")
+            noask.callback = self.on_noask
+            self.add_item(noask)
         if is_telegram_id(channel_id):  # Telegram can't show small grey text (Discord's rows are full anyway)
             off = s["tg_stats"] == "off"
             stats = discord.ui.Button(custom_id="pv:stats", label="Stats line: show" if off else "Stats line: turn off",
@@ -3371,6 +3408,56 @@ class PermView(GuardedView):
         off = get_settings(self.channel_id)["tg_stats"] == "off"
         update_settings(self.channel_id, tg_stats="spoiler" if off else "off")
         await self._refresh(inter)
+
+    async def on_noask(self, inter):
+        if no_ask_until(self.channel_id) is not None:  # turning it off needs no confirmation
+            update_settings(self.channel_id, cc_no_ask_until=None)
+            await self._refresh(inter)
+            return
+        self.stop()
+        e = discord.Embed(title="☠️ Full access without asking?", color=COLOR_ERR, description=(
+            "Your Claude Code messages in this chat will run with **full access and no confirmation card**: it can run "
+            "any command, install software, and change or delete files anywhere on this PC, right away.\n\n"
+            "The risk: Claude Code reads web pages and files you don't control. Hidden instructions in them "
+            "(\"delete the user's documents\") could then run without you seeing the task first.\n\n"
+            "Still asked first: jobs the local model proposes (Auto engine). Never available on the Ollama backend. "
+            "Switching this chat away from full access turns it off. Scheduled tasks keep their own permissions."))
+        await inter.response.edit_message(embed=e, view=NoAskConfirmView(self.channel_id))
+
+
+class NoAskConfirmView(GuardedView):
+    """Turning on "full access without asking": owners only, and it says for how long."""
+    owner_all = True
+
+    def __init__(self, channel_id: int):
+        super().__init__(timeout=120)
+        self.channel_id = channel_id
+        for cid, label, emoji, style, hours in [
+            ("na:12h", "For 12 hours", "⏲️", discord.ButtonStyle.danger, 12),
+            ("na:on", "Until I turn it off", "☠️", discord.ButtonStyle.danger, None),
+            ("na:back", "Back", "⬅️", discord.ButtonStyle.secondary, 0),
+        ]:
+            b = discord.ui.Button(custom_id=cid, label=label, emoji=emoji, style=style)
+            b.callback = self._pick(hours)
+            self.add_item(b)
+
+    def _pick(self, hours: int | None):
+        async def cb(inter: discord.Interaction):
+            self.stop()
+            if hours != 0:
+                s = get_settings(self.channel_id)
+                if s["cc_backend"] == "ollama":
+                    await inter.response.edit_message(content="⛔ Not on the Ollama backend: the local model never gets "
+                                                      "a shell without you approving each job.", embed=None, view=None)
+                    return
+                until = NO_ASK_FOREVER if hours is None else time.time() + hours * 3600
+                update_settings(self.channel_id, cc_perm="full", cc_no_ask_until=until)
+                log.info("Full access without asking turned on in %s by %s (%s)", self.channel_id, inter.user.id,
+                         "until turned off" if hours is None else f"{hours}h")
+                note_event("bot", "Full access without asking turned on", channel_id=self.channel_id,
+                           user_id=inter.user.id, until=None if hours is None else until)
+            await inter.response.edit_message(embed=perm_embed(self.channel_id), view=PermView(self.channel_id))
+        return cb
 
 
 class TasksView(GuardedView):
@@ -3424,7 +3511,8 @@ def task_embed(t: dict, note: str | None = None) -> discord.Embed:
     e.add_field(name="Prompt", value=clip(t["prompt"], 1000), inline=False)
     if t.get("engine") == "claude":
         p = PERMS[t.get("perm", "read")]
-        e.add_field(name="May", value=f"{p[0]} **{p[1]}**: {p[2]}", inline=False)
+        what = "Any command, anywhere on this PC, with nobody watching." if t.get("perm") == "full" else p[2]
+        e.add_field(name="May", value=f"{p[0]} **{p[1]}**: {what}", inline=False)
         e.add_field(name="Workspace", value=f"`{t.get('workspace')}`")
     else:
         e.add_field(name="May", value="🌐 web search and page fetch", inline=False)
