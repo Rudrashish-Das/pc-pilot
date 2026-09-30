@@ -121,6 +121,7 @@ input[type=search] { font: inherit; flex: 1; min-width: 0; padding: 8px 12px; bo
       <div class="card wide" id="busy-card"><h2>Right now</h2><div id="busy"></div></div>
       <div class="card"><h2>Claude Code spend today</h2><div id="spend"></div></div>
       <div class="card"><h2>Models in memory</h2><div id="models"></div></div>
+      <div class="card"><h2>Installed models</h2><div id="installed"></div></div>
       <div class="card"><h2>Laptop</h2><div id="machine"></div></div>
       <div class="card"><h2>Bot</h2><div id="botinfo"></div></div>
       <div class="card"><h2>Coming up</h2><div id="next"></div></div>
@@ -362,6 +363,27 @@ function renderNow() {
       h("div", { class: "small muted" }, `${(m.size_mb / 1024).toFixed(1)} GB · ${m.size_mb ? Math.round((m.vram_mb / m.size_mb) * 100) : 0}% on GPU` + (m.context ? ` · ${Math.round(m.context / 1024)}k ctx` : "")))))
       : h("div", { class: "empty" }, st.ollama_up === false ? "Ollama isn't reachable." : "None loaded (they load on the next message)."),
     busy.whisper_loaded ? h("div", { class: "small muted", style: "margin-top:8px" }, "🎙️ Whisper (voice notes) is loaded") : null);
+  // installed
+  const inst = st.installed;
+  if (inst) {
+    const bare = (n) => (n || "").replace(/:latest$/, "");
+    const loaded = new Set(ms.map((m) => bare(m.name)));
+    const local = inst.local.map((m) => h("div", { class: "item" },
+      h("div", { class: "row" }, h("b", {}, m.name),
+        h("span", {}, bare(m.name) === bare(inst.default_local) ? h("span", { class: "badge" }, "default") : null,
+          loaded.has(bare(m.name)) ? h("span", { class: "badge ok", style: "margin-left:4px" }, "loaded") : null)),
+      m.size_gb != null ? h("div", { class: "small muted" }, [m.params, m.quant, m.size_gb + " GB on disk", m.family].filter(Boolean).join(" · ")) : null));
+    const cc = inst.claude.map((c) => h("div", { class: "item" },
+      h("div", { class: "row" }, h("b", {}, "Claude Code · " + c.backend),
+        c.backend.toLowerCase() === inst.claude_backend ? h("span", { class: "badge" }, "default backend") : null),
+      h("div", { class: "small muted" }, c.models.map((n) => (n === inst.default_claude && c.backend.toLowerCase() === inst.claude_backend ? n + " (default)" : n)).join(" · "))));
+    put($("installed"),
+      h("div", { class: "small muted", style: "margin-bottom:4px" }, `Local models (${inst.local.length})`),
+      local.length ? h("div", { class: "list" }, local) : h("div", { class: "empty" }, st.ollama_up === false ? "The local model server isn't reachable." : "None installed. Add one with: ollama pull qwen3.5:9b"),
+      cc.length ? h("div", { class: "list", style: "margin-top:10px" }, cc) : null,
+      inst.claude.length && inst.local.length ? h("div", { class: "small muted", style: "margin-top:6px" }, "Claude Code can also run on the local models (Ollama backend in /panel).") : null,
+      inst.whisper ? h("div", { class: "small muted", style: "margin-top:6px" }, `🎙️ Voice notes: Whisper ${inst.whisper}`) : null);
+  }
   // machine
   const mc = st.machine || {};
   const rows = [];

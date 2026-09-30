@@ -272,6 +272,34 @@ async def ollama_models() -> list[dict]:
     return out
 
 
+async def installed_models() -> dict:
+    """Every model the bot can use: what's installed on the local server(s), and Claude Code's choices."""
+    local: dict[str, dict] = {}
+    for root in {core._llm_root(), core.OLLAMA_URL}:
+        try:
+            r = await core.http.get(f"{root}/api/tags", timeout=3)
+            r.raise_for_status()
+        except Exception:
+            continue
+        for m in r.json().get("models", []):
+            d = m.get("details") or {}
+            name = m.get("name") or m.get("model")
+            local.setdefault(name, {"name": name, "size_gb": round((m.get("size") or 0) / 2**30, 1),
+                                    "params": d.get("parameter_size"), "quant": d.get("quantization_level"),
+                                    "family": d.get("family"), "modified": m.get("modified_at")})
+    if not local:  # not Ollama (LM Studio, llama.cpp, a gateway…): names only, from /v1/models
+        for name in await core.list_local_models():
+            local[name] = {"name": name}
+    claude = []
+    if core.CC_ENABLED:
+        claude.append({"backend": "Anthropic", "models": list(core.ANTHROPIC_MODELS)})
+        if core.CC_CUSTOM_BASE_URL and core.CC_CUSTOM_MODELS:
+            claude.append({"backend": "Custom gateway", "models": list(core.CC_CUSTOM_MODELS)})
+    return {"local": sorted(local.values(), key=lambda m: m["name"]), "claude": claude,
+            "default_local": core.LLM_MODEL, "default_claude": core.CC_MODEL, "claude_backend": core.CC_BACKEND,
+            "whisper": core.WHISPER_MODEL if core.VOICE_ENABLED else None}
+
+
 async def ollama_up() -> bool:
     try:
         r = await core.http.get(f"{core._llm_root()}/api/version", timeout=2)
@@ -428,6 +456,7 @@ async def state(request: web.Request) -> dict:
                  "power": {**pending, **_names(pending.get("channel_id"), pending.get("user_id"))} if pending else None},
         "models": await cached("models", 4, ollama_models),
         "ollama_up": await cached("ollama_up", 10, ollama_up),
+        "installed": await cached("installed", 30, installed_models),
         "spend": {"today": core.spent_today(), "daily_budget": core.CC_DAILY_BUDGET_USD,
                   "job_budget": core.CC_MAX_BUDGET_USD,
                   "jobs_today": core._usage.get("jobs", 0) if core._usage.get("date") == core.now_local().date().isoformat() else 0},

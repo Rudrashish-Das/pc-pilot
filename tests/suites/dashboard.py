@@ -113,6 +113,13 @@ async def main():
         since = st["events"][-1]["id"]
         check((await c.get(f"/api/state?since={since}")).json()["events"] == [], "state: since= returns only new events")
         check(isinstance(st["machine"], dict) and "spend" in st, "state: machine and spend")
+        inst = st["installed"]
+        check(isinstance(inst["local"], list) and inst["default_local"] == B.LLM_MODEL and "whisper" in inst,
+              f"state: installed models ({len(inst['local'])} local; none offline is fine)")
+        cc_was, B.CC_ENABLED = B.CC_ENABLED, True
+        cc = (await D.installed_models())["claude"]
+        B.CC_ENABLED = cc_was
+        check(cc and cc[0]["backend"] == "Anthropic" and "sonnet" in cc[0]["models"], "installed: Claude Code models")
         c1 = st["machine"]["cpu"]
         check(c1 is not None and 0 <= c1["percent"] <= 100 and c1["cores"], f"state: CPU load {c1}")
 
