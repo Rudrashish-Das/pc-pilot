@@ -40,13 +40,25 @@ function Build-Launcher {
 
 function Get-BotProcess {
     # "-m llmbot" but not the "--mcp-web" helper that Claude Code starts
-    Get-CimInstance Win32_Process -Filter "Name = 'pythonw.exe' OR Name = 'python.exe'" |
+    $p = Get-CimInstance Win32_Process -Filter "Name = 'pythonw.exe' OR Name = 'python.exe'" |
         Where-Object { $_.CommandLine -match "-m\s+llmbot" -and $_.CommandLine -notmatch "--mcp-web" }
+    if ($p) { return $p }
+    # A copy started as administrator hides its command line from a normal window; it still holds the bot's port
+    $owner = Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 47823 -ErrorAction SilentlyContinue |
+        Select-Object -First 1 -ExpandProperty OwningProcess
+    if ($owner) { Get-CimInstance Win32_Process -Filter "ProcessId = $owner" }
 }
 
 function Stop-Bot {
     $p = Get-BotProcess
-    if ($p) { $p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; "Stopped." } else { "Not running." }
+    if (-not $p) { "Not running."; return }
+    try {
+        $p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop }
+        "Stopped."
+    } catch {
+        Write-Error "Couldn't stop it (PID $($p.ProcessId -join ', ')): it was started as administrator. Run this once in an administrator PowerShell."
+        exit 1
+    }
 }
 
 function Get-EnvValue($name) {
@@ -71,7 +83,13 @@ function Get-DashboardHttpsPort {
 
 function Start-Bot {
     if (Get-BotProcess) { "Already running."; return }
-    Start-Process -FilePath $Pythonw -ArgumentList "-m", "llmbot" -WorkingDirectory $Dir
+    if (Test-Path $Launcher) {
+        # Through Explorer, like Startup apps: the bot gets normal rights even from an administrator window (so Claude
+        # Code jobs never run as admin), and it doesn't belong to this terminal (closing it can't take the bot along)
+        Start-Process explorer.exe -ArgumentList "`"$Launcher`""
+    } else {
+        Start-Process -FilePath $Pythonw -ArgumentList "-m", "llmbot" -WorkingDirectory $Dir
+    }
     "Started. Logs: $LogFile"
 }
 
