@@ -28,7 +28,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 import discord
@@ -292,6 +292,13 @@ PERM_ARGS = {
              "--tools", "Read,Glob,Grep,Edit,Write,WebSearch,WebFetch", "--allowedTools", *READ_TOOLS, "Edit(./**)"],
     "full": ["--permission-mode", "bypassPermissions"],
 }
+# Read/edit jobs can't run commands, but the workspace is theirs to write. Files Claude Code itself loads from there
+# would turn one prompt-injected edit (a web page telling it what to write) into commands or standing instructions
+# on every later job: .claude/settings*.json hooks, .mcp.json servers, CLAUDE.md. So those files are not writable,
+# and project/local settings in the workspace aren't loaded at all (only your user settings).
+SANDBOX_ARGS = ["--setting-sources", "user",
+                "--disallowedTools", "Edit(./.claude/**)", "Edit(./.mcp.json)", "Edit(./CLAUDE.md)",
+                "Edit(./CLAUDE.local.md)", "Edit(./**/CLAUDE.md)"]
 
 if DEFAULT_ENGINE not in ENGINES:
     DEFAULT_ENGINE = "local"
@@ -378,6 +385,14 @@ def is_allowed(user_id: int) -> bool:
 
 def is_owner(user_id: int) -> bool:
     return user_id in (TELEGRAM_OWNER_IDS if is_telegram_id(user_id) else OWNER_IDS)
+
+
+def is_allowed_in(user_id: int, guild: Any) -> bool:
+    """is_allowed for a Discord message/interaction. An empty ALLOWED_USER_IDS means "everyone in the server", not
+    everyone on Discord: anyone who shares any server with the bot can DM it, so DMs are then owners-only."""
+    if not is_allowed(user_id):
+        return False
+    return guild is not None or is_telegram_id(user_id) or bool(ALLOWED_USER_IDS) or is_owner(user_id)
 
 
 CC_ENABLED = bool(OWNER_IDS or TELEGRAM_OWNER_IDS)
@@ -496,8 +511,9 @@ class UnsafeURL(Exception):
 _BLOCKED_HOSTNAMES = {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}
 
 
-async def assert_public_url(url: str) -> None:
-    """Reject non-http(s) URLs and any host resolving to a non-global address (SSRF guard)."""
+async def assert_public_url(url: str) -> str:
+    """Reject non-http(s) URLs and any host resolving to a non-global address (SSRF guard). Returns a checked IP to
+    connect to, so a second DNS lookup can't swap in a private address (DNS rebinding)."""
     p = urlsplit(url)
     if p.scheme not in ("http", "https"):
         raise UnsafeURL(f"scheme '{p.scheme}' not allowed")
@@ -514,12 +530,28 @@ async def assert_public_url(url: str) -> None:
         infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror:
         raise UnsafeURL(f"cannot resolve {host}")
+    checked: list[str] = []
     for info in infos:
         ip = ipaddress.ip_address(info[4][0].split("%", 1)[0])
         if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
             ip = ip.ipv4_mapped
         if not ip.is_global or ip.is_multicast:
             raise UnsafeURL(f"{host} resolves to a private/local address")
+        checked.append(str(ip))
+    if not checked:
+        raise UnsafeURL(f"cannot resolve {host}")
+    return checked[0]
+
+
+def pinned_request(url: str, ip: str) -> tuple[str, dict[str, str], dict]:
+    """(URL with the host replaced by the checked IP, Host header, httpx extensions). TLS still verifies the
+    certificate against the real hostname (SNI)."""
+    p = urlsplit(url)
+    netloc = (f"[{ip}]" if ":" in ip else ip) + (f":{p.port}" if p.port else "")
+    host = p.hostname or ""
+    host_header = (f"[{host}]" if ":" in host else host) + (f":{p.port}" if p.port else "")
+    ext = {"sni_hostname": host} if p.scheme == "https" else {}
+    return urlunsplit((p.scheme, netloc, p.path or "/", p.query, "")), {"Host": host_header}, ext
 
 
 _TEXT_TYPES = {"text/plain", "text/markdown", "application/json", "text/csv"}
@@ -530,26 +562,31 @@ async def fetch_page(url: str) -> str:
     import trafilatura
 
     headers = {"User-Agent": "Mozilla/5.0 (compatible; DiscordLLMBot/1.0)", "Accept": "text/html,*/*;q=0.5"}
-    for _hop in range(6):
-        await assert_public_url(url)  # re-checked on every redirect hop
-        async with http.stream("GET", url, headers=headers, follow_redirects=False, timeout=20) as r:
-            if r.is_redirect:
-                url = urljoin(url, r.headers.get("location", ""))
-                continue
-            if r.status_code >= 400:
-                return f"HTTP {r.status_code} fetching {url}"
-            ctype = r.headers.get("content-type", "").split(";")[0].strip().lower()
-            if ctype not in _TEXT_TYPES | _HTML_TYPES:
-                return f"Cannot read content type '{ctype or 'unknown'}' at {url}"
-            buf = bytearray()
-            async for chunk in r.aiter_bytes():
-                buf.extend(chunk)
-                if len(buf) >= FETCH_MAX_BYTES:
-                    break
-            encoding = r.charset_encoding or "utf-8"
-        break
-    else:
-        return "Too many redirects."
+    # Own client without keep-alive: the connection pool is keyed by IP, so a pooled TLS connection made for one
+    # site could otherwise carry a request for another site on the same (CDN) address.
+    async with httpx.AsyncClient(limits=httpx.Limits(max_keepalive_connections=0)) as client:
+        for _hop in range(6):
+            ip = await assert_public_url(url)  # re-checked on every redirect hop
+            target, host, ext = pinned_request(url, ip)
+            async with client.stream("GET", target, headers={**headers, **host}, extensions=ext,
+                                     follow_redirects=False, timeout=20) as r:
+                if r.is_redirect:
+                    url = urljoin(url, r.headers.get("location", ""))
+                    continue
+                if r.status_code >= 400:
+                    return f"HTTP {r.status_code} fetching {url}"
+                ctype = r.headers.get("content-type", "").split(";")[0].strip().lower()
+                if ctype not in _TEXT_TYPES | _HTML_TYPES:
+                    return f"Cannot read content type '{ctype or 'unknown'}' at {url}"
+                buf = bytearray()
+                async for chunk in r.aiter_bytes():
+                    buf.extend(chunk)
+                    if len(buf) >= FETCH_MAX_BYTES:
+                        break
+                encoding = r.charset_encoding or "utf-8"
+            break
+        else:
+            return "Too many redirects."
 
     if ctype in _HTML_TYPES:
         text = await asyncio.to_thread(trafilatura.extract, bytes(buf), url=url, include_comments=False)
@@ -698,11 +735,26 @@ def extract_tasks(text: str, channel_id: int, user_id: int) -> tuple[str, list[s
     return TASK_RE.sub("", text).strip(), lines
 
 
-def tasks_text() -> str:
-    if not _tasks:
+def visible_to(creator: int, user_id: int | None) -> bool:
+    """Reminders and tasks hold private text (and say which chat they post to): owners see all, others only their
+    own. user_id None = no filter."""
+    return user_id is None or creator == user_id or is_owner(user_id)
+
+
+def my_tasks(user_id: int | None) -> list[dict]:
+    return [t for t in _tasks.values() if visible_to(t["created_by"], user_id)]
+
+
+def my_reminders(user_id: int | None) -> list[dict]:
+    return sorted((r for r in _reminders.values() if visible_to(r["user_id"], user_id)), key=lambda r: r["when"])
+
+
+def tasks_text(user_id: int | None = None) -> str:
+    tasks = my_tasks(user_id)
+    if not tasks:
         return "No scheduled tasks."
     lines = []
-    for t in _tasks.values():
+    for t in tasks:
         nr = next_run(t["id"])
         when = f"once at {t['at']}" if t.get("at") else f"cron '{t['cron']}'"
         lines.append(f"{t['id']}: {t['description']} | {when} | next {nr.isoformat() if nr else '-'} | "
@@ -838,11 +890,11 @@ def reminder_line(r: dict) -> str:
             f"({discord.utils.format_dt(dt, 'R')}): {clip(r['text'], 200)}")
 
 
-def reminders_text() -> str:
-    if not _reminders:
+def reminders_text(user_id: int | None = None) -> str:
+    rems = my_reminders(user_id)
+    if not rems:
         return "No reminders."
-    return "\n".join(f"{r['id']}: {r['text']} | at {r['when']} | channel {r['channel_id']}"
-                     for r in sorted(_reminders.values(), key=lambda r: r["when"]))
+    return "\n".join(f"{r['id']}: {r['text']} | at {r['when']} | channel {r['channel_id']}" for r in rems)
 
 
 def extract_reminders(text: str, channel_id: int, user_id: int) -> tuple[str, list[str]]:
@@ -973,7 +1025,7 @@ async def execute_tool(name: str, args: dict, ctx: ToolCtx) -> str:
                          ctx.channel_id, ctx.user_id, at=parse_when(at) if at else None)
             return f"Scheduled task {t['id']} ('{t['description']}'), next run {next_run(t['id'])}."
         if name == "list_tasks":
-            return tasks_text()
+            return tasks_text(ctx.user_id)
         if name == "cancel_task":
             return cancel_task(str(args.get("task_id", "")), ctx.user_id)
         if name == "set_reminder":
@@ -982,7 +1034,7 @@ async def execute_tool(name: str, args: dict, ctx: ToolCtx) -> str:
             return (f"Reminder {r['id']} set for {datetime.fromisoformat(r['when']):%a %d %b %H:%M} ({TIMEZONE}). "
                     "The bot shows the confirmed time under your reply; acknowledge briefly.")
         if name == "list_reminders":
-            return reminders_text()
+            return reminders_text(ctx.user_id)
         if name == "cancel_reminder":
             return cancel_reminder(str(args.get("reminder_id", "")), ctx.user_id)
         if name == "propose_claude_code":
@@ -1225,10 +1277,15 @@ def _decode_16k(data: bytes):
     import numpy as np
 
     chunks = []
+    limit, n = (VOICE_MAX_SECONDS + 1) * 16000, 0  # stop early: a few MB of Opus can decode to hours of audio
     with av.open(io.BytesIO(data)) as container:
         rs = av.AudioResampler(format="s16", layout="mono", rate=16000)
         for frame in container.decode(audio=0):
-            chunks += [f.to_ndarray() for f in rs.resample(frame)]
+            new = [f.to_ndarray() for f in rs.resample(frame)]
+            chunks += new
+            n += sum(c.shape[-1] for c in new)
+            if n > limit:
+                raise ValueError(f"voice note is longer than {VOICE_MAX_SECONDS}s (VOICE_MAX_SECONDS)")
         chunks += [f.to_ndarray() for f in rs.resample(None)]
     if not chunks:
         return np.zeros(0, dtype=np.float32)
@@ -1428,9 +1485,10 @@ def local_web(snap: CCSnap) -> bool:
 
 
 def mcp_web_config() -> str:
-    cfg = {"mcpServers": {"bot": {"type": "stdio", "command": sys.executable, "args": ["-m", "llmbot", "--mcp-web"],
-                                  # Claude Code starts it in the workspace, so point Python at this repo
-                                  "env": {"PYTHONPATH": str(BASE_DIR)}}}}
+    # Claude Code starts it in the workspace, so point Python at this repo. -P: don't put the cwd (the workspace,
+    # which Claude can write to in edit mode) on sys.path, or a workspace file named llmbot/, httpx.py … would run.
+    cfg = {"mcpServers": {"bot": {"type": "stdio", "command": sys.executable, "args": ["-P", "-m", "llmbot", "--mcp-web"],
+                                  "env": {"PYTHONPATH": str(BASE_DIR), "PYTHONSAFEPATH": "1"}}}}
     _atomic_write_json(MCP_WEB_CONFIG, cfg)  # rewritten each time so it follows the running version
     return str(MCP_WEB_CONFIG)
 
@@ -1516,6 +1574,8 @@ def build_cc_command(binary: str, snap: CCSnap) -> list[str]:
         cmd += ["--max-budget-usd", f"{CC_MAX_BUDGET_USD:g}"]
     if snap.resume:
         cmd += ["--resume", snap.resume]
+    if snap.perm != "full":
+        cmd += SANDBOX_ARGS
     return cmd + perm_args(snap)  # --allowedTools is variadic, keep it last
 
 
@@ -2363,17 +2423,18 @@ def panel_embed(channel_id: int) -> discord.Embed:
     return e
 
 
-def tasks_embed() -> discord.Embed:
-    e = discord.Embed(title=f"⏰ Tasks ({len(_tasks)}/{TASK_MAX}) & reminders ({len(_reminders)})", color=COLOR_RUN)
-    if not _tasks and not _reminders:
+def tasks_embed(user_id: int | None = None) -> discord.Embed:
+    """user_id: whose list (owners see everything); None = everything."""
+    tasks, rems = my_tasks(user_id), my_reminders(user_id)
+    e = discord.Embed(title=f"⏰ Tasks ({len(tasks)}/{TASK_MAX}) & reminders ({len(rems)})", color=COLOR_RUN)
+    if not tasks and not rems:
         e.description = ("Nothing scheduled. Just ask (\"remind me to … in 10 min\", \"every morning at 9 …\"), "
                          "or use `/remind` and `/schedule`.")
-    rems = sorted(_reminders.values(), key=lambda r: r["when"])
     for r in rems[:12]:
         dt = datetime.fromisoformat(r["when"])
         e.add_field(name=f"🔔 `{r['id']}` {clip(r['text'], 200)}", inline=False,
                     value=f"{discord.utils.format_dt(dt, 'f')} ({discord.utils.format_dt(dt, 'R')}) · {where(r['channel_id'])}")
-    for t in list(_tasks.values())[:25 - min(len(rems), 12)]:
+    for t in tasks[:25 - min(len(rems), 12)]:
         e.add_field(name=f"🔁 `{t['id']}` {clip(t['description'], 200)}", inline=False,
                     value=f"{task_label(t)} · {where(t['channel_id'])}")
     return e
@@ -2652,7 +2713,7 @@ class GuardedView(discord.ui.View):
         return self.owner_all or cid in self.owner_custom_ids
 
     async def interaction_check(self, inter: discord.Interaction) -> bool:
-        if not is_allowed(inter.user.id):
+        if not is_allowed_in(inter.user.id, inter.guild):
             await inter.response.send_message("⛔ You're not allowed to use this bot.", ephemeral=True)
             return False
         if self.needs_owner(inter) and not is_owner(inter.user.id):
@@ -2780,7 +2841,7 @@ class PanelView(GuardedView):
         await inter.followup.send("🧹 Local chat history cleared.", ephemeral=True)
 
     async def on_tasks(self, inter):
-        await inter.response.send_message(embed=tasks_embed(), view=TasksView(), ephemeral=True)
+        await inter.response.send_message(embed=tasks_embed(inter.user.id), view=TasksView(inter.user.id), ephemeral=True)
 
     async def on_refresh(self, inter):
         await self.rerender(inter)
@@ -2873,14 +2934,15 @@ class PermView(GuardedView):
 
 
 class TasksView(GuardedView):
-    def __init__(self):
+    def __init__(self, user_id: int | None = None):
         super().__init__(timeout=600)
+        self.user_id = user_id
         opts = [discord.SelectOption(label=clip(f"🔔 {r['id']} · {r['text']}", 100), value=r["id"],
                                      description=clip(f"{datetime.fromisoformat(r['when']):%d %b %H:%M}", 100))
-                for r in sorted(_reminders.values(), key=lambda r: r["when"])][:12]
+                for r in my_reminders(user_id)][:12]
         opts += [discord.SelectOption(label=clip(f"🔁 {t['id']} · {t['description']}", 100), value=t["id"],
                                       description=clip(f"once {datetime.fromisoformat(t['at']):%d %b %H:%M}" if t.get("at")
-                                                       else f"cron {t['cron']}", 100)) for t in _tasks.values()]
+                                                       else f"cron {t['cron']}", 100)) for t in my_tasks(user_id)]
         if opts:
             sel = discord.ui.Select(custom_id="t:cancel", placeholder="🗑️ Cancel a reminder or task…", options=opts[:25])
             sel.callback = self.on_cancel
@@ -2890,7 +2952,7 @@ class TasksView(GuardedView):
         value = inter.data["values"][0]
         msg = cancel_reminder(value, inter.user.id) if value in _reminders else cancel_task(value, inter.user.id)
         self.stop()
-        await inter.response.edit_message(content=msg, embed=tasks_embed(), view=TasksView())
+        await inter.response.edit_message(content=msg, embed=tasks_embed(self.user_id), view=TasksView(self.user_id))
 
 
 class ReminderView(GuardedView):
@@ -3071,7 +3133,7 @@ def compact_snap(snap: CCSnap, session_id: str) -> CCSnap:
 
 class Tree(app_commands.CommandTree):
     async def interaction_check(self, inter: discord.Interaction) -> bool:
-        if is_allowed(inter.user.id):
+        if is_allowed_in(inter.user.id, inter.guild):
             return True
         if inter.type == discord.InteractionType.application_command:
             await inter.response.send_message("⛔ You're not allowed to use this bot.", ephemeral=True)
@@ -3167,8 +3229,9 @@ class LLMBot(discord.Client):
             addressed = message.guild is None or mode == "all"
         if not addressed:
             return
-        if not is_allowed(message.author.id):
-            log.info("Ignored message from user %s (not in ALLOWED_USER_IDS)", message.author.id)
+        if not is_allowed_in(message.author.id, message.guild):
+            log.info("Ignored message from user %s (not in ALLOWED_USER_IDS, or a DM with no allow-list)",
+                     message.author.id)
             return
         if voice is not None and message.guild is not None and get_settings(message.channel.id)["voice"] == "off":
             return
@@ -3313,6 +3376,10 @@ async def ask_cmd(inter: discord.Interaction, prompt: str, file: discord.Attachm
 @app_commands.describe(prompt="Your message", model="Model override (defaults to the channel's)")
 async def local_cmd(inter: discord.Interaction, prompt: str, model: str | None = None):
     await inter.response.defer(thinking=True)
+    # Non-owners pick from what the server lists (on a paid gateway such as LiteLLM, any name could cost money)
+    if model and not is_owner(inter.user.id) and model not in await list_local_models():
+        await inter.followup.send(f"⚠️ `{clip(model, 100)}` isn't one of the server's models.", ephemeral=True)
+        return
     await answer_local(inter.channel, inter.user.id, prompt, Out(inter.channel, inter), model=model)
 
 
@@ -3368,7 +3435,8 @@ async def remind_cmd(inter: discord.Interaction, when: str, what: str):
 
 @bot.tree.command(name="tasks", description="List and cancel reminders and scheduled tasks")
 async def tasks_cmd(inter: discord.Interaction):
-    await inter.response.send_message(embed=tasks_embed(), view=TasksView())
+    # Only you see it: reminders are often personal ("take my meds")
+    await inter.response.send_message(embed=tasks_embed(inter.user.id), view=TasksView(inter.user.id), ephemeral=True)
 
 
 @bot.tree.command(name="reset", description="Clear this channel's local chat history")

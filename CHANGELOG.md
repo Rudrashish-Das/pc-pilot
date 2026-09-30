@@ -9,6 +9,15 @@ Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `
   - the model is kept loaded until the bot's own idle unload, instead of Ollama's 5-minute default.
 - Local engine memory is 20 exchanges instead of 6 (`LLM_HISTORY_TURNS`), with a size cap (`LLM_HISTORY_CHARS`, 40k characters) so long answers can't overflow a 32k context window.
 - Claude Code: the wait after a reply for a lingering CLI is 5 seconds instead of 15.
+- Security fixes from an audit:
+  - Web fetches connect to the exact address that passed the private-network check, so a DNS answer that changes between check and connect (DNS rebinding) can't reach the laptop's local services.
+  - Read and edit Claude Code jobs can't write `.claude/`, `.mcp.json` or `CLAUDE.md` in the workspace, and don't load its project settings. A prompt-injected edit could otherwise have planted hooks that run commands on the next job.
+  - The web-tools helper for Ollama/custom backends no longer imports Python modules from the workspace (`python -P`), which an edit job could write.
+  - With an empty `ALLOWED_USER_IDS`, Discord DMs are owners-only. Before, anyone sharing any server with the bot could DM it.
+  - `/tasks` and the local model's list tools show only your own reminders and tasks (owners see all). On Discord, `/tasks` is visible only to you.
+  - `/local model:` accepts only the server's listed models from non-owners, since on a paid gateway any model name could cost money.
+  - Voice notes stop decoding at `VOICE_MAX_SECONDS`, instead of decoding the whole file first (a small file can hold hours of audio).
+  - Telegram buttons only act in the chat they were posted in, and disabled buttons can't be triggered.
 
 ## 0.24.0
 - Telegram: the stats line is a tap-to-reveal spoiler, because Telegram has no small grey text. It can be turned off per chat in `/panel` → ⚙️ Settings. Warnings (compact hints, blocked tools, unbacked claims) stay visible either way.

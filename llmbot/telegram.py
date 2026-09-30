@@ -803,7 +803,7 @@ class Telegram:
         elif cmd == "panel":
             await chan.send(embed=core.panel_embed(cid), view=await core.PanelView.build(cid))
         elif cmd == "tasks":
-            await chan.send(embed=core.tasks_embed(), view=core.TasksView())
+            await chan.send(embed=core.tasks_embed(uid), view=core.TasksView(uid))
         elif cmd == "new":
             if not owner:
                 await out(content="⛔ Only owners can manage Claude Code sessions.")
@@ -938,6 +938,9 @@ class Telegram:
             await toast("These buttons have expired; send the command again.")
             return
         view, msg = entry.view, entry.msg
+        if (qmsg.get("chat") or {}).get("id") != msg.chat_id:  # buttons only act in the chat they were posted in
+            await toast("These buttons have expired; send the command again.")
+            return
         if rest == "b":  # back from a select's option list
             await self._show_menu(entry, tok, None)
             await toast("")
@@ -947,6 +950,9 @@ class Telegram:
             item = view.children[int(idx)]
         except (ValueError, IndexError):
             await toast("That button no longer exists.")
+            return
+        if getattr(item, "disabled", False) or getattr(item, "url", None):  # never shown as tappable
+            await toast("That button isn't available.")
             return
         if opt == "m":
             await self._show_menu(entry, tok, int(idx))

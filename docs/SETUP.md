@@ -100,7 +100,7 @@ Just ask: "remind me to take my meds in 10 min", "remind me at 6pm to call mum",
 
 - Under the reply you get a grey line with the confirmed time, shown in your own timezone. That line comes from the bot, not the model.
 - When it's due, the bot posts in the same channel and pings **only you** (it never pings roles or @everyone). It has ✅ Done and 💤 10 min buttons.
-- `/tasks` (or ⏰ in `/panel`) lists and cancels reminders and recurring tasks. For repeating reminders use `/schedule` or ask for one ("every day at 9pm").
+- `/tasks` (or ⏰ in `/panel`) lists and cancels reminders and recurring tasks. Only you see the list, and it shows only your own (owners see everyone's). For repeating reminders use `/schedule` or ask for one ("every day at 9pm").
 - Reminders are kept in `data/reminders.json` and survive restarts. One that was due while the bot was off or the laptop was asleep is sent as soon as the bot is back, marked late.
 
 ## Scheduled prompts

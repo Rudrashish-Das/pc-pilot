@@ -112,7 +112,7 @@ copy .env.example .env
    ALLOWED_USER_IDS=111111111111111111
    OWNER_IDS=111111111111111111
    ```
-   Owners can use Claude Code. Users who are only allowed get just the local model. **Always set `ALLOWED_USER_IDS`:** if it's empty, everyone in the server can use the local model.
+   Owners can use Claude Code. Users who are only allowed get just the local model. **Always set `ALLOWED_USER_IDS`:** if it's empty, everyone in the server can use the local model (DMs are then owners-only).
 
 ### 3. Create the Telegram bot (optional)
 
