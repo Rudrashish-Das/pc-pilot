@@ -1,6 +1,6 @@
 <#
-  Discord LLM Bot control.
-    .\scripts\bot_control.ps1 install   Add "Discord LLM Bot" to Startup apps (toggle it later in Task Manager > Startup apps)
+  pc-pilot control.
+    .\scripts\bot_control.ps1 install   Add "pc-pilot" to Startup apps (toggle it later in Task Manager > Startup apps)
     .\scripts\bot_control.ps1 remove    Remove it from Startup apps
     .\scripts\bot_control.ps1 boot      Also start it when Windows boots, before anyone signs in (run as administrator, once)
     .\scripts\bot_control.ps1 unboot    Undo boot (run as administrator)
@@ -16,10 +16,12 @@ param([Parameter(Position = 0)][ValidateSet("install", "remove", "boot", "unboot
 
 $Dir      = Split-Path $PSScriptRoot -Parent  # the repo root
 $Pythonw  = Join-Path $Dir ".venv\Scripts\pythonw.exe"
-$Shortcut = Join-Path ([Environment]::GetFolderPath("Startup")) "Discord LLM Bot.lnk"
+$Shortcut = Join-Path ([Environment]::GetFolderPath("Startup")) "pc-pilot.lnk"
+$OldShortcut = Join-Path ([Environment]::GetFolderPath("Startup")) "Discord LLM Bot.lnk"  # before the rename to pc-pilot
 $LogFile  = Join-Path $Dir "data\bot.log"
-$Launcher = Join-Path $Dir "bin\DiscordLLMBot.exe"  # built from scripts\launcher.cs so Startup apps shows our name and logo
-$BootTask = "Discord LLM Bot (boot)"  # llmbot/core.py BOOT_TASK looks for this name
+$Launcher = Join-Path $Dir "bin\pc-pilot.exe"  # built from scripts\launcher.cs so Startup apps shows our name and logo
+$BootTask = "pc-pilot (boot)"  # llmbot/core.py BOOT_TASK looks for this name
+$OldBootTask = "Discord LLM Bot (boot)"  # before the rename
 
 function Test-Admin {
     ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
@@ -82,11 +84,11 @@ switch ($Action) {
         $ws = New-Object -ComObject WScript.Shell
         $lnk = $ws.CreateShortcut($Shortcut)
         if (Build-Launcher) {
-            # Task Manager names a startup entry after the program it runs, so this shows as "Discord LLM Bot"
+            # Task Manager names a startup entry after the program it runs, so this shows as "pc-pilot"
             $lnk.TargetPath = $Launcher
             $lnk.Arguments = ""
             $lnk.IconLocation = "$Launcher,0"
-            $name = "Discord LLM Bot"
+            $name = "pc-pilot"
         } else {
             $lnk.TargetPath = $Pythonw
             $lnk.Arguments = "-m llmbot"
@@ -94,13 +96,16 @@ switch ($Action) {
             Write-Warning "Couldn't build the launcher (no csc.exe), so Task Manager will list the bot as 'Python'."
         }
         $lnk.WorkingDirectory = $Dir
-        $lnk.Description = "Discord LLM Bot"
+        $lnk.Description = "pc-pilot"
         $lnk.Save()
+        # the entry and launcher from before the rename to pc-pilot
+        Remove-Item $OldShortcut, (Join-Path $Dir "bin\DiscordLLMBot.exe") -ErrorAction SilentlyContinue
         "Added to Startup apps: $Shortcut"
         "Enable/disable it in Task Manager > Startup apps (listed as '$name')."
     }
     "remove" {
-        if (Test-Path $Shortcut) { Remove-Item $Shortcut; "Removed from Startup apps." } else { "Not in Startup apps." }
+        $found = @($Shortcut, $OldShortcut) | Where-Object { Test-Path $_ }
+        if ($found) { Remove-Item $found; "Removed from Startup apps." } else { "Not in Startup apps." }
     }
     "boot" {
         if (-not (Test-Admin)) { Write-Error "Run PowerShell as administrator for this one."; exit 1 }
@@ -113,16 +118,18 @@ switch ($Action) {
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
             -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -Priority 4  # default 7 = below normal
         Register-ScheduledTask -TaskName $BootTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings `
-            -Description "Starts the Discord LLM Bot at boot, before anyone signs in. Made by scripts\bot_control.ps1 boot." `
+            -Description "Starts pc-pilot at boot, before anyone signs in. Made by scripts\bot_control.ps1 boot." `
             -Force | Out-Null
+        Get-ScheduledTask -TaskName $OldBootTask -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
         "The bot now starts when Windows boots, as $user, with no sign-in needed. It also starts Ollama if it isn't running."
         "Keep the Startup apps entry too: if the bot is already running at sign-in, it does nothing."
         "Undo with: .\scripts\bot_control.ps1 unboot (as administrator)"
     }
     "unboot" {
-        if (-not (Get-ScheduledTask -TaskName $BootTask -ErrorAction SilentlyContinue)) { "Not set to start at boot."; return }
+        $tasks = @($BootTask, $OldBootTask) | ForEach-Object { Get-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue }
+        if (-not $tasks) { "Not set to start at boot."; return }
         if (-not (Test-Admin)) { Write-Error "Run PowerShell as administrator for this one."; exit 1 }
-        Unregister-ScheduledTask -TaskName $BootTask -Confirm:$false
+        $tasks | Unregister-ScheduledTask -Confirm:$false
         "Removed: the bot no longer starts at boot (Startup apps still starts it when you sign in, if installed)."
     }
     "start" { Start-Bot }

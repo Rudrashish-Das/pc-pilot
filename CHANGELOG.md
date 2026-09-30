@@ -3,6 +3,10 @@
 Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `bot_v22.py`). From 0.23.0 on, git history is the record.
 
 ## Unreleased
+- Renamed to **pc-pilot** (github.com/Rudrashish-Das/pc-pilot):
+  - What changes: the Startup apps entry (`pc-pilot`), the launcher (`bin\pc-pilot.exe`), the boot task (`pc-pilot (boot)`) and the web user-agent.
+  - Updating: run `bot_control.ps1 install` again, and `boot` again (as administrator) if you use it. They remove the old "Discord LLM Bot" entry and task.
+  - Unchanged: the Python package and the run command (`python -m llmbot`).
 - Dashboard theme button next to the status line: 🖥️ System (follows the phone or PC), ☀️ Light, 🌙 Dark. Tap to cycle; each browser remembers its choice.
 - Chat from the dashboard: a **Chat** tab talks to the bot over your Wi-Fi, a third front end next to Discord and Telegram on the same backend. It works without internet (local model, Claude Code on Ollama, reminders). Several chats, each with its own engine, model and session; `/panel` and the other menus and buttons work in the page; file attachments both ways; Claude Code's steps shown live. `DASHBOARD_CHAT` = owner (default: the access key holder is an owner) / user (local model only) / off.
 - Dashboard chat: `/` autocompletes commands (with what each does), and 🎙️ voice input turns speech into text with the PC's Whisper, into the message box to check before sending. The dashboard is also served over https (`DASHBOARD_HTTPS_PORT`, default 8766, self-signed certificate in `data/`), because phones only allow the microphone on https; `bot_control.ps1 firewall` opens that port too. New dependency: `cryptography`.

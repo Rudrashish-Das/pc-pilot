@@ -737,7 +737,7 @@ _HTML_TYPES = {"text/html", "application/xhtml+xml", "application/xml", "text/xm
 async def fetch_page(url: str) -> str:
     import trafilatura
 
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; DiscordLLMBot/1.0)", "Accept": "text/html,*/*;q=0.5"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; pc-pilot/1.0)", "Accept": "text/html,*/*;q=0.5"}
     # Own client without keep-alive: the connection pool is keyed by IP, so a pooled TLS connection made for one
     # site could otherwise carry a request for another site on the same (CDN) address.
     async with httpx.AsyncClient(limits=httpx.Limits(max_keepalive_connections=0)) as client:
@@ -1888,7 +1888,7 @@ def perm_args(snap: CCSnap) -> list[str]:
 async def _mcp_web_server() -> None:
     """Minimal MCP server over stdio (newline-delimited JSON-RPC): initialize, tools/list, tools/call, ping."""
     global http
-    http = httpx.AsyncClient(headers={"User-Agent": "DiscordLLMBot/1.0"})
+    http = httpx.AsyncClient(headers={"User-Agent": "pc-pilot/1.0"})
     sys.stdin.reconfigure(encoding="utf-8")
     sys.stdout.reconfigure(encoding="utf-8")
     loop = asyncio.get_running_loop()
@@ -1910,7 +1910,7 @@ async def _mcp_web_server() -> None:
             continue  # notifications (initialized, cancelled) need no reply
         if method == "initialize":
             result = {"protocolVersion": params.get("protocolVersion", "2025-06-18"), "capabilities": {"tools": {}},
-                      "serverInfo": {"name": "discordllmbot-web", "version": "1"}}
+                      "serverInfo": {"name": "pc-pilot-web", "version": "1"}}
         elif method == "tools/list":
             result = {"tools": tools}
         elif method == "ping":
@@ -3913,7 +3913,7 @@ async def core_start() -> None:
     if _started:
         return
     _started = True
-    http = httpx.AsyncClient(headers={"User-Agent": "DiscordLLMBot/1.0"})
+    http = httpx.AsyncClient(headers={"User-Agent": "pc-pilot/1.0"})
     scheduler.start()
     load_tasks()
     load_reminders()
@@ -4191,10 +4191,11 @@ def power_supported() -> bool:
 def startup_installed() -> bool:
     """Whether scripts/bot_control.ps1 install added the bot to Startup apps (it starts when someone signs in)."""
     appdata = os.getenv("APPDATA")
-    return bool(appdata) and (Path(appdata) / "Microsoft/Windows/Start Menu/Programs/Startup/Discord LLM Bot.lnk").exists()
+    folder = Path(appdata or ".") / "Microsoft/Windows/Start Menu/Programs/Startup"
+    return bool(appdata) and any((folder / n).exists() for n in ("pc-pilot.lnk", "Discord LLM Bot.lnk"))  # new, old
 
 
-BOOT_TASK = "Discord LLM Bot (boot)"  # the scheduled task scripts/bot_control.ps1 boot registers
+BOOT_TASKS = ("pc-pilot (boot)", "Discord LLM Bot (boot)")  # what scripts/bot_control.ps1 boot registers (new, old)
 _autostart_cache: tuple[float, str | None] = (-1e9, None)
 
 
@@ -4205,12 +4206,13 @@ def autostart() -> str | None:
     if time.monotonic() - _autostart_cache[0] < 60:
         return _autostart_cache[1]
     mode = None
-    if sys.platform == "win32":
+    for task in BOOT_TASKS if sys.platform == "win32" else ():
         try:
-            r = subprocess.run(["schtasks", "/query", "/tn", BOOT_TASK, "/fo", "csv", "/nh"], capture_output=True,
+            r = subprocess.run(["schtasks", "/query", "/tn", task, "/fo", "csv", "/nh"], capture_output=True,
                                text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
             if r.returncode == 0 and "Disabled" not in r.stdout:
                 mode = "boot"
+                break
         except (OSError, subprocess.TimeoutExpired):
             pass
     if mode is None and startup_installed():

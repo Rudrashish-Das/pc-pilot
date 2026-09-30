@@ -74,14 +74,14 @@ Using it:
 ```powershell
 .\scripts\bot_control.ps1 install
 ```
-This adds a **Discord LLM Bot** entry, with the logo, to Startup apps. You can enable or disable it in Task Manager. The entry runs `bin\DiscordLLMBot.exe`, a small launcher that `install` compiles from `scripts\launcher.cs` using the C# compiler built into Windows. Task Manager lists a startup entry under the name of the program it runs, so without the launcher the entry would show as "Python". The bot runs with no window and logs to `data\bot.log`. Other commands: `start`, `stop`, `restart`, `status`, `log`, `remove`. After pulling updates, run `restart`. If PowerShell blocks the script, run `powershell -ExecutionPolicy Bypass -File .\scripts\bot_control.ps1 install`.
+This adds a **pc-pilot** entry, with the logo, to Startup apps. You can enable or disable it in Task Manager. The entry runs `bin\pc-pilot.exe`, a small launcher that `install` compiles from `scripts\launcher.cs` using the C# compiler built into Windows. Task Manager lists a startup entry under the name of the program it runs, so without the launcher the entry would show as "Python". The bot runs with no window and logs to `data\bot.log`. Other commands: `start`, `stop`, `restart`, `status`, `log`, `remove`. After pulling updates, run `restart`. If PowerShell blocks the script, run `powershell -ExecutionPolicy Bypass -File .\scripts\bot_control.ps1 install`.
 
 ### Start at boot, before anyone signs in
 Startup apps wait for someone to sign in. For the bot to come back after `/power` → Restart, or after a power cut, while the PC sits at the lock screen, run this once in PowerShell as administrator:
 ```powershell
 .\scripts\bot_control.ps1 boot
 ```
-- **What it does:** registers the scheduled task **Discord LLM Bot (boot)**. At startup it runs `pythonw -m llmbot --boot` as you, using S4U, so Windows doesn't store your password. The bot waits up to 30 minutes for the network. Saved Wi-Fi networks connect before sign-in.
+- **What it does:** registers the scheduled task **pc-pilot (boot)**. At startup it runs `pythonw -m llmbot --boot` as you, using S4U, so Windows doesn't store your password. The bot waits up to 30 minutes for the network. Saved Wi-Fi networks connect before sign-in.
 - **Ollama:** its app also waits for sign-in. So if nothing answers on `localhost:11434` when the bot starts, the bot runs `ollama serve` itself, hidden, with your `OLLAMA_*` settings. `OLLAMA_AUTOSTART=false` turns this off.
 - **Signing in later:** the bot keeps running in Windows' background session. The Startup apps entry sees it and does nothing, so you get no second copy and no restart.
 - **Lock from a bot started at boot:** Lock disconnects your screen session instead. You see the sign-in screen, and your apps keep running.

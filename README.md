@@ -201,7 +201,7 @@ You should see `Logged in as YourBot#1234`, and `Telegram: logged in as @yourbot
 ### 8. Run it in the background, at logon and at boot (Windows)
 
 ```powershell
-.\scripts\bot_control.ps1 install   # adds "Discord LLM Bot" to Startup apps
+.\scripts\bot_control.ps1 install   # adds "pc-pilot" to Startup apps
 .\scripts\bot_control.ps1 start     # starts it now, with no window
 ```
 
@@ -213,7 +213,7 @@ Startup apps only run once someone signs in. So after `/power` → Restart, the 
 
 This registers a scheduled task that starts the bot as you, before anyone signs in. Windows doesn't store your password for it. If Ollama isn't running then (its own app also waits for sign-in), the bot starts `ollama serve` itself. Keep the Startup apps entry as well: at sign-in it sees the bot already running and does nothing. `unboot` removes the task.
 
-`install` builds a small launcher, `bin\DiscordLLMBot.exe`, using the C# compiler that comes with Windows. Task Manager names each startup entry after the program it runs, so the launcher is what makes the entry show as **Discord LLM Bot** with the logo. Without it, the entry would show as "Python". Run `install` again if you move the folder.
+`install` builds a small launcher, `bin\pc-pilot.exe`, using the C# compiler that comes with Windows. Task Manager names each startup entry after the program it runs, so the launcher is what makes the entry show as **pc-pilot** with the logo. Without it, the entry would show as "Python". Run `install` again if you move the folder.
 
 | Command | Does |
 |---|---|
@@ -287,7 +287,7 @@ tests/
   fixtures/       sample Claude Code stream-json output, a short voice note
 scripts/
   bot_control.ps1 install / start / stop / restart / status / log / dashboard / firewall
-  launcher.cs     the Startup-apps launcher that install compiles to bin\DiscordLLMBot.exe
+  launcher.cs     the Startup-apps launcher that install compiles to bin\pc-pilot.exe
 assets/           logo.png, logo.ico
 docs/SETUP.md     detailed guide: every feature, costs, security
 .env.example      every setting, documented
