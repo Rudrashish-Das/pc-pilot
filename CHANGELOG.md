@@ -14,6 +14,7 @@ Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `
   - From an administrator window it no longer runs as administrator, so its Claude Code jobs can't get admin rights.
   - Closing the terminal that started it no longer stops it.
   - `status` and `stop` also find a copy that was started as administrator; `stop` says that it needs an administrator window.
+  - `stop` and `restart` also stop a copy the boot task started, from a normal window (by ending the task).
 - Renamed to **pc-pilot** (github.com/Rudrashish-Das/pc-pilot):
   - What changes: the Startup apps entry (`pc-pilot`), the launcher (`bin\pc-pilot.exe`), the boot task (`pc-pilot (boot)`) and the web user-agent.
   - Updating: run `bot_control.ps1 install` again, and `boot` again (as administrator) if you use it.

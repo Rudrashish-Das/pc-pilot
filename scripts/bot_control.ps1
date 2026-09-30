@@ -55,10 +55,18 @@ function Stop-Bot {
     try {
         $p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop }
         "Stopped."
-    } catch {
-        Write-Error "Couldn't stop it (PID $($p.ProcessId -join ', ')): it was started as administrator. Run this once in an administrator PowerShell."
-        exit 1
+        return
+    } catch {}
+    # A copy the boot task started runs in the background session, where a normal window can't stop it;
+    # ending the task can.
+    $task = Get-ScheduledTask -TaskName $BootTask -ErrorAction SilentlyContinue
+    if ($task -and $task.State -eq "Running") {
+        try { Stop-ScheduledTask -TaskName $BootTask -ErrorAction Stop } catch {}
+        Start-Sleep -Seconds 2
+        if (-not (Get-BotProcess)) { "Stopped (it was started at boot)."; return }
     }
+    Write-Error "Couldn't stop it (PID $($p.ProcessId -join ', ')): it was started as administrator. Run this once in an administrator PowerShell."
+    exit 1
 }
 
 function Get-EnvValue($name) {
