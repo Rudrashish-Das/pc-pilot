@@ -76,6 +76,17 @@ async def main():
     await tg._dispatch(tap(OWNER, bt["✖️ Cancel"]))
     check(cmds[-1] == ("shutdown", "/a") and not B.POWER_FILE.exists() and "stays on" in edits(tg)[-1], "cancel aborts it")
 
+    print("== what the restart message promises, by how the bot starts")
+    for mode, want in (("boot", "about a minute after Windows starts"), ("logon", "once someone signs in"),
+                       (None, "stay offline")):
+        B.autostart = lambda mode=mode: mode
+        bt = await open_power(tg)
+        footer_ok = ("bot_control.ps1 boot" in tg.last_text()) == (mode != "boot")
+        await tg._dispatch(tap(OWNER, bt["🔁 Restart"]))
+        await tg._dispatch(tap(OWNER, confirm_buttons(tg)["🔁 Yes, restart"]))
+        check(want in edits(tg)[-1] and footer_ok, f"{mode}: {edits(tg)[-1]!r}")
+        B.power_pending() and B.STORE.delete("power", B.POWER_FILE)
+
     print("== a failed command")
     fake_run.result = "Access is denied.(5)"
     bt = await open_power(tg)

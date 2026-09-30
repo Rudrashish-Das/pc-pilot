@@ -98,6 +98,9 @@ SYSTEM_PROMPT = _env("SYSTEM_PROMPT") or (
 # goes at the top of each user message instead. Any change in the prefix makes it re-read the whole chat.
 TIME_NOTE = "Each user message starts with the local time it was sent, as [Now: ...]."
 OLLAMA_URL = _env("OLLAMA_URL", "http://localhost:11434").rstrip("/")  # used by the Claude Code 'ollama' backend
+# Start `ollama serve` if nothing answers on this PC's Ollama port when the bot starts. Needed when the bot starts at
+# boot (bot_control.ps1 boot): Ollama's own app only starts once someone signs in.
+OLLAMA_AUTOSTART = _env("OLLAMA_AUTOSTART", "true").lower() not in ("0", "false", "no", "off")
 
 CLAUDE_BIN = _env("CLAUDE_BIN")
 DEFAULT_ENGINE = _env("DEFAULT_ENGINE", "local").lower()
@@ -1313,6 +1316,55 @@ async def list_local_models() -> list[str]:
             log.info("Model list unavailable: %s", e)
     _model_cache = (time.monotonic(), sorted(models))
     return _model_cache[1]
+
+
+def _ollama_exe() -> str | None:
+    found = shutil.which("ollama")
+    if found:
+        return found
+    default = Path(os.getenv("LOCALAPPDATA") or "~").expanduser() / "Programs/Ollama/ollama.exe"  # the Windows installer's
+    return str(default) if default.exists() else None
+
+
+async def ensure_ollama() -> None:
+    """Start `ollama serve` when a local Ollama URL is configured and nothing answers there (e.g. right after boot)."""
+    if not OLLAMA_AUTOSTART:
+        return
+    local = [u for u in (LLM_URL, OLLAMA_URL) if urlsplit(u).hostname in ("localhost", "127.0.0.1", "::1")
+             and (urlsplit(u).port or 80) == 11434]
+    if not local:
+        return  # a remote server, or another local server (LM Studio, llama.cpp…): not ours to start
+    root = urlunsplit(urlsplit(local[0])._replace(path=""))
+    up = False
+    try:
+        up = (await http.get(f"{root}/api/version", timeout=2)).status_code == 200
+    except httpx.HTTPError:
+        pass
+    exe = None if up else _ollama_exe()
+    if up or not exe:
+        if not up:
+            log.info("Nothing answers at %s and ollama.exe wasn't found, so it wasn't started", root)
+        return
+    env = {k: v for k, v in os.environ.items() if k not in SCRUB_ENV}
+    flags = (subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP) if sys.platform == "win32" else 0
+    try:
+        subprocess.Popen([exe, "serve"], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, creationflags=flags, start_new_session=sys.platform != "win32")
+    except OSError as e:
+        log.warning("Couldn't start Ollama: %s", oneline(redact(e), 200))
+        return
+    for _ in range(30):
+        await asyncio.sleep(1)
+        try:
+            if (await http.get(f"{root}/api/version", timeout=2)).status_code == 200:
+                break
+        except httpx.HTTPError:
+            pass
+    else:
+        log.warning("Started Ollama, but it isn't answering at %s after 30s", root)
+        return
+    log.info("Started Ollama (nothing was answering at %s)", root)
+    note_event("bot", "Started Ollama: nothing was answering on this PC")
 
 
 async def list_ollama_models() -> list[str]:
@@ -3518,6 +3570,7 @@ async def core_start() -> None:
     scheduler.start()
     load_tasks()
     load_reminders()
+    _spawn(ensure_ollama())
     _spawn(idle_unloader())
     _spawn(power_watch())
     _spawn(power_back_on_start())
@@ -3775,8 +3828,8 @@ POWER_ACTIONS = {  # key: (emoji, label, what happens)
                             "It posts here when it's awake."),
     "hibernate": ("🛌", "Hibernate", "Like sleep, but saved to disk and using no power. Offline until someone presses "
                                     "the power button. It posts here when it's back."),
-    "restart": ("🔁", "Restart", f"Restarts in {POWER_DELAY}s (/power → Cancel stops it). The bot posts here once "
-                                "Windows is up and you've signed in."),
+    "restart": ("🔁", "Restart", f"Restarts in {POWER_DELAY}s (/power → Cancel stops it). The bot posts here when "
+                                "it's back."),
     "shutdown": ("🔌", "Shut down", f"Shuts down in {POWER_DELAY}s (/power → Cancel stops it). It can't be turned "
                                    "on from chat: someone has to press the power button."),
 }
@@ -3789,9 +3842,37 @@ def power_supported() -> bool:
 
 
 def startup_installed() -> bool:
-    """Whether scripts/bot_control.ps1 install added the bot to Startup apps (needed to come back after a restart)."""
+    """Whether scripts/bot_control.ps1 install added the bot to Startup apps (it starts when someone signs in)."""
     appdata = os.getenv("APPDATA")
     return bool(appdata) and (Path(appdata) / "Microsoft/Windows/Start Menu/Programs/Startup/Discord LLM Bot.lnk").exists()
+
+
+BOOT_TASK = "Discord LLM Bot (boot)"  # the scheduled task scripts/bot_control.ps1 boot registers
+_autostart_cache: tuple[float, str | None] = (-1e9, None)
+
+
+def autostart() -> str | None:
+    """How the bot comes back after a restart: "boot" (scheduled task, no sign-in needed), "logon" (Startup apps,
+    once someone signs in) or None."""
+    global _autostart_cache
+    if time.monotonic() - _autostart_cache[0] < 60:
+        return _autostart_cache[1]
+    mode = None
+    if sys.platform == "win32":
+        try:
+            r = subprocess.run(["schtasks", "/query", "/tn", BOOT_TASK, "/fo", "csv", "/nh"], capture_output=True,
+                               text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
+            if r.returncode == 0 and "Disabled" not in r.stdout:
+                mode = "boot"
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    if mode is None and startup_installed():
+        mode = "logon"
+    _autostart_cache = (time.monotonic(), mode)
+    return mode
+
+
+AUTOSTART_TIP = "On the laptop, run scripts\\bot_control.ps1 boot as administrator."
 
 
 def power_pending() -> dict | None:
@@ -3816,7 +3897,22 @@ async def _run_cmd(*cmd: str) -> str | None:
 
 def _lock() -> bool:
     import ctypes
-    return bool(ctypes.windll.user32.LockWorkStation())
+    k32, wts = ctypes.windll.kernel32, ctypes.windll.wtsapi32
+    screen = k32.WTSGetActiveConsoleSessionId()
+    mine = ctypes.c_ulong()
+    if k32.ProcessIdToSessionId(os.getpid(), ctypes.byref(mine)) and mine.value == screen:
+        return bool(ctypes.windll.user32.LockWorkStation())
+    # Started at boot, the bot runs in Windows' background session, where LockWorkStation does nothing. Disconnecting
+    # the screen's session instead shows the sign-in screen while its apps keep running, which is what a lock does.
+    if screen == 0xFFFFFFFF:
+        return True  # no screen session at all
+    buf, size = ctypes.c_wchar_p(), ctypes.c_ulong()
+    if wts.WTSQuerySessionInformationW(None, screen, 5, ctypes.byref(buf), ctypes.byref(size)):  # 5 = WTSUserName
+        user = buf.value
+        wts.WTSFreeMemory(buf)
+        if not user:
+            return True  # nobody signed in: it's already at the sign-in screen
+    return bool(wts.WTSDisconnectSession(None, screen, False))
 
 
 def _suspend(hibernate: bool) -> bool:
@@ -3916,9 +4012,12 @@ def power_embed(note: str | None = None) -> discord.Embed:
                     f"<t:{int(rec['at']) + POWER_DELAY}:T>. Press ✖️ Cancel to stop it.", inline=False)
     for em, label, desc in POWER_ACTIONS.values():
         e.add_field(name=f"{em} {label}", value=desc, inline=False)
-    if not startup_installed():
-        e.set_footer(text="The bot isn't in Startup apps, so after a restart it won't come back on its own. "
-                          "Run scripts\\bot_control.ps1 install on the laptop.")
+    mode = autostart()
+    if mode == "logon":
+        e.set_footer(text="After a restart the bot comes back only once someone signs in on the laptop. To have it "
+                          f"come back at boot: {AUTOSTART_TIP}")
+    elif mode is None:
+        e.set_footer(text=f"The bot doesn't start on its own, so after a restart it stays offline. {AUTOSTART_TIP}")
     return e
 
 
@@ -3979,8 +4078,9 @@ class PowerConfirmView(PowerView):
             verb = "Restarting" if self.action == "restart" else "Shutting down"
             text = f"{POWER_ACTIONS[self.action][0]} {verb} in {POWER_DELAY}s. /power → Cancel stops it."
             if self.action == "restart":
-                text += (" I'll post here when I'm back." if startup_installed()
-                         else " I'm not in Startup apps, so I won't come back on my own.")
+                text += {"boot": " I'll post here when I'm back, about a minute after Windows starts.",
+                         "logon": " I'll post here once someone signs in on the laptop.",
+                         }.get(autostart(), " I don't start on my own, so I'll stay offline until someone starts me.")
         else:
             text = f"{POWER_ACTIONS[self.action][0]} Going to {self.action} in a few seconds. I'll post here when I'm awake."
         await inter.response.edit_message(content=text, embed=None, view=None)
@@ -4080,8 +4180,9 @@ def main() -> None:
     for name, path in WORKSPACES.items():
         if path == BASE_DIR or path in BASE_DIR.parents:
             log.warning("Workspace '%s' contains the bot folder: Claude Code could read .env (your tokens).", name)
-    if not _wait_for_network():
-        log.error("No network after 5 minutes; exiting.")
+    wait = 1800 if "--boot" in sys.argv else 300  # started at boot (bot_control.ps1 boot): nobody is there to retry
+    if not _wait_for_network(wait):
+        log.error("No network after %d minutes; exiting.", wait // 60)
         sys.exit(1)
     if DISCORD_TOKEN:
         bot.run(DISCORD_TOKEN, log_handler=None)  # the Telegram front end starts from setup_hook -> core_start

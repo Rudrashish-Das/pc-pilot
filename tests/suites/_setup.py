@@ -17,6 +17,7 @@ os.environ["LLMBOT_DATA_DIR"] = str(TMP / "data")
 os.environ.setdefault("TIMEZONE", "Asia/Kolkata")  # the suites' expected times are written in IST
 # Never used to connect; makes Discord the front end for its ids. A suite can set DISCORD_TOKEN="" first (Telegram only).
 os.environ.setdefault("DISCORD_TOKEN", "fake-token-for-tests")
+os.environ.setdefault("OLLAMA_AUTOSTART", "false")  # core_start must never launch a real `ollama serve` in tests
 sys.path.insert(0, str(ROOT))
 
 import llmbot.core as B  # noqa: E402

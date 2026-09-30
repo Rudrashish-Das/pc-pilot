@@ -198,21 +198,30 @@ You should see `Logged in as YourBot#1234`, and `Telegram: logged in as @yourbot
   ```
   Stop the bot with `Ctrl+C` and start it again. From then on, just message it.
 
-### 8. Run it in the background and at logon (Windows)
+### 8. Run it in the background, at logon and at boot (Windows)
 
 ```powershell
 .\scripts\bot_control.ps1 install   # adds "Discord LLM Bot" to Startup apps
 .\scripts\bot_control.ps1 start     # starts it now, with no window
 ```
 
+Startup apps only run once someone signs in. So after `/power` → Restart, the laptop would sit at the lock screen with the bot offline. To have it start at boot instead, run this once in PowerShell **as administrator**:
+
+```powershell
+.\scripts\bot_control.ps1 boot
+```
+
+This registers a scheduled task that starts the bot as you, before anyone signs in. Windows doesn't store your password for it. If Ollama isn't running then (its own app also waits for sign-in), the bot starts `ollama serve` itself. Keep the Startup apps entry as well: at sign-in it sees the bot already running and does nothing. `unboot` removes the task.
+
 `install` builds a small launcher, `bin\DiscordLLMBot.exe`, using the C# compiler that comes with Windows. Task Manager names each startup entry after the program it runs, so the launcher is what makes the entry show as **Discord LLM Bot** with the logo. Without it, the entry would show as "Python". Run `install` again if you move the folder.
 
 | Command | Does |
 |---|---|
-| `status` | Shows whether it's running and whether it's in Startup apps |
+| `status` | Shows whether it's running, in Startup apps, and set to start at boot |
 | `stop` / `start` / `restart` | Stops, starts or restarts the background bot. Use `restart` after changing `.env` or pulling updates |
 | `log` | Follows `data\bot.log` |
 | `remove` | Takes it out of Startup apps |
+| `boot` / `unboot` | Starts it at boot, before sign-in, or stops doing that (as administrator) |
 
 Only one copy can run at a time. A second one exits on its own, so stop the background copy before running `python -m llmbot` in a terminal.
 

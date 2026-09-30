@@ -76,6 +76,17 @@ Using it:
 ```
 This adds a **Discord LLM Bot** entry, with the logo, to Startup apps. You can enable or disable it in Task Manager. The entry runs `bin\DiscordLLMBot.exe`, a small launcher that `install` compiles from `scripts\launcher.cs` using the C# compiler built into Windows. Task Manager lists a startup entry under the name of the program it runs, so without the launcher the entry would show as "Python". The bot runs with no window and logs to `data\bot.log`. Other commands: `start`, `stop`, `restart`, `status`, `log`, `remove`. After pulling updates, run `restart`. If PowerShell blocks the script, run `powershell -ExecutionPolicy Bypass -File .\scripts\bot_control.ps1 install`.
 
+### Start at boot, before anyone signs in
+Startup apps wait for someone to sign in. For the bot to come back after `/power` → Restart, or after a power cut, while the laptop sits at the lock screen, run this once in PowerShell as administrator:
+```powershell
+.\scripts\bot_control.ps1 boot
+```
+- **What it does:** registers the scheduled task **Discord LLM Bot (boot)**. At startup it runs `pythonw -m llmbot --boot` as you, using S4U, so Windows doesn't store your password. The bot waits up to 30 minutes for the network. Saved Wi-Fi networks connect before sign-in.
+- **Ollama:** its app also waits for sign-in. So if nothing answers on `localhost:11434` when the bot starts, the bot runs `ollama serve` itself, hidden, with your `OLLAMA_*` settings. `OLLAMA_AUTOSTART=false` turns this off.
+- **Signing in later:** the bot keeps running in Windows' background session. The Startup apps entry sees it and does nothing, so you get no second copy and no restart.
+- **Lock from a bot started at boot:** Lock disconnects your screen session instead. You see the sign-in screen, and your apps keep running.
+- **Checking and undoing:** `status` shows whether the task is set up; `unboot` (as administrator) removes it.
+
 ## Talking to the bot
 - **Reply style** (`/panel` → ⚙️ Settings, default `REPLY_STYLE=chat`): **💬 Chat** replies like a person: a plain message, *typing…* while it works, and one small grey line with model · cost · today's spend · context · session id. **🗂️ Cards** brings back the embeds with live progress and Stop / Follow up / Retry / Full log / Compact buttons. `/claude` always uses cards.
 - In chat style, reply to one of the bot's messages to keep talking (no @ needed); `/stop` stops a running reply and `/log` shows its full log.
@@ -122,9 +133,9 @@ Owners only, on Windows. `/power` offers five actions:
 - **Restart and shut down** wait 30 seconds, like `shutdown /t 30`. Open `/power` again and press ✖️ **Cancel** to stop it.
 - **Back-up notice:** the bot posts in the chat where you asked, and pings only you, when it's up again:
   - after sleep or hibernate, as soon as the laptop wakes and the network is back;
-  - after a restart, once Windows has started, you've signed in, and the bot has started.
+  - after a restart, about a minute after Windows starts, if the bot starts at boot (`bot_control.ps1 boot`, see [Start at boot](#start-at-boot-before-anyone-signs-in)). With only the Startup apps entry, it's once someone signs in.
 
-  For the restart case the bot has to be in Startup apps (`.\scripts\bot_control.ps1 install`). `/power` warns you if it isn't.
+  `/power` says which of these applies, and tells you how to fix it if the bot won't come back on its own.
 - **Turning the laptop on** isn't possible from chat, because nothing is running to receive the message. The same goes for waking it from sleep: someone has to open the lid or press a key or the power button.
 - **If a requested action never happened**, for example a restart that was cancelled on the laptop itself, the bot says so after a few minutes.
 - **It's never a model tool:** neither the local model nor Claude Code can trigger it. Only the `/power` buttons can, after the owner check.

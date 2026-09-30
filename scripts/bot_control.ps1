@@ -2,6 +2,8 @@
   Discord LLM Bot control.
     .\scripts\bot_control.ps1 install   Add "Discord LLM Bot" to Startup apps (toggle it later in Task Manager > Startup apps)
     .\scripts\bot_control.ps1 remove    Remove it from Startup apps
+    .\scripts\bot_control.ps1 boot      Also start it when Windows boots, before anyone signs in (run as administrator, once)
+    .\scripts\bot_control.ps1 unboot    Undo boot (run as administrator)
     .\scripts\bot_control.ps1 start     Start the bot in the background (no console window)
     .\scripts\bot_control.ps1 stop      Stop the running bot
     .\scripts\bot_control.ps1 restart   Stop, then start (after pulling updates)
@@ -10,13 +12,19 @@
     .\scripts\bot_control.ps1 dashboard Print the web dashboard's link (with its access key) and open it here
     .\scripts\bot_control.ps1 firewall  Let phones on your Wi-Fi reach the dashboard (run as administrator, once)
 #>
-param([Parameter(Position = 0)][ValidateSet("install", "remove", "start", "stop", "restart", "status", "log", "dashboard", "firewall")][string]$Action = "status")
+param([Parameter(Position = 0)][ValidateSet("install", "remove", "boot", "unboot", "start", "stop", "restart", "status", "log", "dashboard", "firewall")][string]$Action = "status")
 
 $Dir      = Split-Path $PSScriptRoot -Parent  # the repo root
 $Pythonw  = Join-Path $Dir ".venv\Scripts\pythonw.exe"
 $Shortcut = Join-Path ([Environment]::GetFolderPath("Startup")) "Discord LLM Bot.lnk"
 $LogFile  = Join-Path $Dir "data\bot.log"
 $Launcher = Join-Path $Dir "bin\DiscordLLMBot.exe"  # built from scripts\launcher.cs so Startup apps shows our name and logo
+$BootTask = "Discord LLM Bot (boot)"  # llmbot/core.py BOOT_TASK looks for this name
+
+function Test-Admin {
+    ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+}
 
 function Build-Launcher {
     # csc.exe ships with Windows (.NET Framework 4), so there's nothing to install
@@ -88,6 +96,29 @@ switch ($Action) {
     "remove" {
         if (Test-Path $Shortcut) { Remove-Item $Shortcut; "Removed from Startup apps." } else { "Not in Startup apps." }
     }
+    "boot" {
+        if (-not (Test-Admin)) { Write-Error "Run PowerShell as administrator for this one."; exit 1 }
+        $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        # S4U: runs as you without storing your password, whether or not you're signed in. It can't use network
+        # shares or saved Windows credentials, which the bot doesn't need.
+        $action = New-ScheduledTaskAction -Execute $Pythonw -Argument "-m llmbot --boot" -WorkingDirectory $Dir
+        $trigger = New-ScheduledTaskTrigger -AtStartup
+        $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType S4U -RunLevel Limited
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+            -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -Priority 4  # default 7 = below normal
+        Register-ScheduledTask -TaskName $BootTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings `
+            -Description "Starts the Discord LLM Bot at boot, before anyone signs in. Made by scripts\bot_control.ps1 boot." `
+            -Force | Out-Null
+        "The bot now starts when Windows boots, as $user, with no sign-in needed. It also starts Ollama if it isn't running."
+        "Keep the Startup apps entry too: if the bot is already running at sign-in, it does nothing."
+        "Undo with: .\scripts\bot_control.ps1 unboot (as administrator)"
+    }
+    "unboot" {
+        if (-not (Get-ScheduledTask -TaskName $BootTask -ErrorAction SilentlyContinue)) { "Not set to start at boot."; return }
+        if (-not (Test-Admin)) { Write-Error "Run PowerShell as administrator for this one."; exit 1 }
+        Unregister-ScheduledTask -TaskName $BootTask -Confirm:$false
+        "Removed: the bot no longer starts at boot (Startup apps still starts it when you sign in, if installed)."
+    }
     "start" { Start-Bot }
     "stop" { Stop-Bot }
     "restart" { Stop-Bot; Start-Sleep -Seconds 2; Start-Bot }
@@ -98,6 +129,9 @@ switch ($Action) {
             -ErrorAction SilentlyContinue).(Split-Path $Shortcut -Leaf)
         $state = if ($approved -and ($approved[0] -band 1)) { "yes, but disabled in Task Manager" } else { "yes (enable/disable in Task Manager)" }
         "In Startup apps: " + $(if (Test-Path $Shortcut) { $state } else { "no" })
+        $task = Get-ScheduledTask -TaskName $BootTask -ErrorAction SilentlyContinue
+        "Starts at boot:  " + $(if (-not $task) { "no (run 'boot' as administrator so it comes back after a restart without sign-in)" }
+                                elseif ($task.State -eq "Disabled") { "disabled in Task Scheduler" } else { "yes" })
     }
     "log" { Get-Content $LogFile -Tail 40 -Wait }
     "dashboard" {
@@ -117,9 +151,7 @@ switch ($Action) {
     }
     "firewall" {
         $port = Get-DashboardPort
-        $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-            [Security.Principal.WindowsBuiltInRole]::Administrator)
-        if (-not $admin) { Write-Error "Run PowerShell as administrator for this one."; exit 1 }
+        if (-not (Test-Admin)) { Write-Error "Run PowerShell as administrator for this one."; exit 1 }
         Get-NetFirewallRule -DisplayName "LLM bot dashboard" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
         # Private networks only (home Wi-Fi). On networks Windows calls Public (cafes, hotels), it stays blocked.
         New-NetFirewallRule -DisplayName "LLM bot dashboard" -Direction Inbound -Protocol TCP -LocalPort $port `
