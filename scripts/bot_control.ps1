@@ -95,9 +95,15 @@ function Start-Bot {
         # Through Explorer, like Startup apps: the bot gets normal rights even from an administrator window (so Claude
         # Code jobs never run as admin), and it doesn't belong to this terminal (closing it can't take the bot along)
         Start-Process explorer.exe -ArgumentList "`"$Launcher`""
+        # From a background process (no desktop, e.g. a restart the bot scheduled for itself) Explorer silently
+        # does nothing: check, and start it directly if it didn't come up
+        foreach ($i in 1..10) { if (Get-BotProcess) { break }; Start-Sleep -Seconds 1 }
+        if (-not (Get-BotProcess)) { Start-Process -FilePath $Launcher -WorkingDirectory $Dir }
     } else {
         Start-Process -FilePath $Pythonw -ArgumentList "-m", "llmbot" -WorkingDirectory $Dir
     }
+    foreach ($i in 1..10) { if (Get-BotProcess) { break }; Start-Sleep -Seconds 1 }
+    if (-not (Get-BotProcess)) { Write-Error "It didn't start. See $LogFile"; exit 1 }
     "Started. Logs: $LogFile"
 }
 
