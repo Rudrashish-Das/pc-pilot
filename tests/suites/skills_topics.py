@@ -109,6 +109,19 @@ async def skill_runs():
         check("owner-only" in said[-1] and len(started) == 1, "owners only")
         await B.run_skill(SimpleNamespace(id=CHAT), OWNER, "nope", "x", out)
         check("No Claude Code skill named `nope`" in said[-1], "unknown skill refused")
+        # made during a job (~/.claude/skills/test/SKILL.md): not in the list yet, found by asking again
+        stub = B.discover_cc_skills
+
+        async def now_has_test():
+            B._cc_skills.append("test")
+            return B._cc_skills
+        B.discover_cc_skills = now_has_test
+        try:
+            await B.run_skill(SimpleNamespace(id=CHAT), OWNER, "test", "", out)
+            check(started[-1] == "/test", "a skill made since the list was taken is found")
+        finally:
+            B.discover_cc_skills = stub
+            B._cc_skills.remove("test")
     finally:
         B.request_cc = real
 asyncio.run(skill_runs())

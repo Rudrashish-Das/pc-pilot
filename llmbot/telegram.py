@@ -912,6 +912,8 @@ class Telegram:
         elif cmd == "usage":
             await chan.send(embed=core.usage_embed(cid), view=core.UsageView(cid))
         elif cmd == "skills":
+            if not args.strip():
+                await core.refresh_cc_skills()
             await out(content=core.skills_reply(uid, args))
         elif cmd == "topic":
             await self._new_topic(args, chan, out, private)
@@ -1025,6 +1027,7 @@ class Telegram:
         out = core.Out(chan, reply_to=me)
         name, _, request = args.strip().partition(" ")
         if not name:
+            await core.refresh_cc_skills()
             await out(content=core.cc_skills_text() + "\n\nUsage: /skill <name> [what you want], e.g. "
                               "`/skill pdf summarise the attached file` (attach files with the command as caption)")
             return

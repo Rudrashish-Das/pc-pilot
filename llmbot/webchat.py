@@ -420,6 +420,7 @@ class WebFrontend:
             if cmd.lower() == "/skill":  # files sent with it go to the skill
                 name, _, request = args.strip().partition(" ")
                 if not name:
+                    await core.refresh_cc_skills()
                     await out(content=core.cc_skills_text() + "\n\nUsage: /skill <name> [what you want], e.g. "
                                       "`/skill pdf summarise this` with the file attached")
                     return
@@ -448,6 +449,8 @@ class WebFrontend:
         elif cmd == "usage":
             await ch.send(embed=core.usage_embed(cid), view=core.UsageView(cid))
         elif cmd == "skills":
+            if not args.strip():
+                await core.refresh_cc_skills()
             await out(content=core.skills_reply(uid, args))
         elif cmd == "new":
             if not owner:

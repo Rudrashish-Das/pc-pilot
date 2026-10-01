@@ -2154,7 +2154,8 @@ class StreamParser:
             if st == "init":
                 self.model = ev.get("model")
                 if ev.get("skills"):  # keeps /skill's list current (skills added or removed since the bot started)
-                    _cc_skills[:] = ev["skills"]
+                    global _cc_skills_at
+                    _cc_skills[:], _cc_skills_at = ev["skills"], time.monotonic()
                 out.append(f"🟢 Session started · `{self.model}`")
             elif st == "permission_denied":
                 self._denied.add(ev.get("tool_use_id", ""))
@@ -2293,6 +2294,18 @@ async def kill_tree(proc: asyncio.subprocess.Process) -> None:
 
 # Claude Code's skills, as its init event lists them (every job refreshes this; discover_cc_skills at start)
 _cc_skills: list[str] = []
+_cc_skills_at = 0.0  # monotonic time of the last refresh
+_cc_skills_lock = asyncio.Lock()
+
+
+async def refresh_cc_skills(max_age: float = 30) -> list[str]:
+    """The skill list, asked again when older than max_age seconds. A skill made during a job (Claude Code writing
+    ~/.claude/skills/<name>/SKILL.md) is on disk right away, but the list only had what that job started with, so
+    /skill <name> said it didn't exist until some later job ran."""
+    async with _cc_skills_lock:
+        if time.monotonic() - _cc_skills_at > max_age:
+            await discover_cc_skills()
+    return _cc_skills
 
 
 async def discover_cc_skills() -> list[str]:
@@ -2330,7 +2343,8 @@ async def discover_cc_skills() -> list[str]:
     finally:
         await kill_tree(proc)
     if skills is not None:
-        _cc_skills[:] = skills
+        global _cc_skills_at
+        _cc_skills[:], _cc_skills_at = skills, time.monotonic()
         log.info("Claude Code skills: %d", len(skills))
     return _cc_skills
 
@@ -3477,6 +3491,9 @@ async def run_skill(channel, user_id: int, name: str, request: str, out: Out, at
         await out(content="Claude Code's skills are off (CC_SKILLS=false in .env).")
         return
     skill, close = find_cc_skill(name)
+    if skill is None:  # maybe made since the list was taken
+        await refresh_cc_skills(max_age=0)
+        skill, close = find_cc_skill(name)
     if skill is None:
         hint = f" Did you mean: {', '.join(f'`{c}`' for c in close)}?" if close else " `/skills` lists them."
         await out(content=f"No Claude Code skill named `{name}`.{hint}")
@@ -4702,6 +4719,11 @@ async def usage_cmd(inter: discord.Interaction):
 @app_commands.describe(show="Name of a skill to show", forget="Name of a skill to delete (owners)")
 async def skills_cmd(inter: discord.Interaction, show: str | None = None, forget: str | None = None):
     args = f"forget {forget}" if forget else f"show {show}" if show else ""
+    if not args:  # the list: asking Claude Code takes a few seconds, past Discord's 3 s to answer
+        await inter.response.defer(ephemeral=True, thinking=True)
+        await refresh_cc_skills()
+        await inter.followup.send(skills_reply(inter.user.id, args), ephemeral=True)
+        return
     await inter.response.send_message(skills_reply(inter.user.id, args), ephemeral=True)
 
 

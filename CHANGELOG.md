@@ -3,6 +3,7 @@
 Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `bot_v22.py`). From 0.23.0 on, git history is the record.
 
 ## Unreleased
+- Fixed: a Claude Code skill made in chat ("make a skill called test…") wasn't found by `/skill test` until some later message ran. The bot's skill list was only refreshed when a job started. Now a name it doesn't know makes it ask Claude Code again, and `/skills` (and `/skill` with no name) shows a list at most 30 seconds old.
 - Fixed: in a Discord DM the bot now answers every message, with no @mention or slash command needed (it only did for voice notes).
 - 🧰 **Claude Code's skills** (docx, pdf, pptx, xlsx, deep-research, dataviz, code-review, skill-creator, … and your own in `~/.claude/skills`) now work from Discord, Telegram and the dashboard chat. Claude uses them by itself when a request fits; `/skill <name> [request]` runs one (Discord autocompletes the name and takes a file; on Telegram and the web, attach files to the command). `/skills` lists them next to the learned ones. `CC_SKILLS=false` turns them off again (they add ~2.5k cached tokens per message; MCP servers stay off either way). A skill runs with the chat's own permissions: skills that run scripts need full access.
 - Claude Code on a small local model (seen with qwen3.5:9b):
