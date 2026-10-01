@@ -123,6 +123,15 @@ input[type=search] { font: inherit; flex: 1; min-width: 0; padding: 8px 12px; bo
 .totals b { font-variant-numeric: tabular-nums; }
 /* big screens: sidebars, columns, readable line lengths */
 .chatside { display: none; }
+.chatside .new { margin-bottom: 6px; }
+.chatside .c { text-align: left; font: inherit; border: 1px solid transparent; background: none; color: var(--text);
+  border-radius: 10px; padding: 8px 10px; cursor: pointer; min-width: 0; }
+.chatside .c:hover { background: var(--chip); }
+.chatside .c.on { background: var(--card); border-color: var(--line); }
+.chatside .c b { display: block; font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chatside .c span { display: block; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* phones and small windows: the list opens over the chat (🗂️) */
+.chatside.open { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; position: fixed; z-index: 30; inset: var(--head, 100px) 0 0 0; padding: 10px 12px; background: var(--bg); }
 @media (min-width: 1200px) {
   .split { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 20px; align-items: start; }
   .split .side { position: sticky; top: calc(var(--head, 100px) + 14px); }
@@ -133,13 +142,7 @@ input[type=search] { font: inherit; flex: 1; min-width: 0; padding: 8px 12px; bo
   #joblist .item, #joblist .item:first-child { border-top: 0; border-bottom: 1px solid var(--line); padding: 10px 0; }
   .chatlayout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 20px; }
   .chatside { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; height: var(--chat-h, calc(100dvh - var(--head, 100px) - 14px)); padding-right: 4px; }
-  .chatside .new { margin-bottom: 6px; }
-  .chatside .c { text-align: left; font: inherit; border: 1px solid transparent; background: none; color: var(--text);
-    border-radius: 10px; padding: 8px 10px; cursor: pointer; min-width: 0; }
-  .chatside .c:hover { background: var(--chip); }
-  .chatside .c.on { background: var(--card); border-color: var(--line); }
-  .chatside .c b { display: block; font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .chatside .c span { display: block; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #chat-list { display: none; }
   #chat-pick, #chat-new { display: none; }
   .chatbar { justify-content: flex-end; }
   .msg { max-width: min(80%, 980px); }
@@ -264,6 +267,7 @@ dialog .row { justify-content: flex-end; }
     <aside class="chatside" id="chat-side"></aside>
     <div class="chatwrap">
       <div class="chatbar">
+        <button class="btn" id="chat-list" title="Chats and Claude Code sessions">🗂️</button>
         <select id="chat-pick" aria-label="Chat"></select>
         <button class="btn" id="chat-new" title="New chat">＋</button>
         <button class="btn" id="chat-panel" title="Engine, models, settings">⚙️</button>
@@ -922,6 +926,7 @@ async function loadChats(selectId) {
 
 function openChat(id) {
   C.id = id; C.v = 0; C.els.clear(); C.rows.clear(); C.job = null; C.typing = false;
+  $("chat-side").classList.remove("open");
   put($("msgs"));
   try { localStorage.setItem("chat", id); } catch (e) {}
   $("chat-pick").value = id;
@@ -1002,8 +1007,8 @@ function sizeChat() {
   root.style.setProperty("--chat-h", Math.max(320, Math.floor(innerHeight / zoom - head - 14)) + "px");
 }
 function renderChatSide() {
-  put($("chat-side"), h("button", { class: "btn new", onclick: () => $("chat-new").click() }, "＋ New chat"),
-    C.chats.map((c) => h("button", { class: "c" + (c.id === C.id ? " on" : ""), onclick: () => { if (c.id !== C.id) openChat(c.id); } },
+  put($("chat-side"), h("button", { class: "btn new", onclick: () => { $("chat-side").classList.remove("open"); $("chat-new").click(); } }, "＋ New chat"),
+    C.chats.map((c) => h("button", { class: "c" + (c.id === C.id ? " on" : ""), onclick: () => { if (c.id !== C.id) openChat(c.id); else $("chat-side").classList.remove("open"); } },
       h("b", {}, c.title), h("span", {}, (c.last || "No messages yet") + " · " + ago(c.updated)))),
     C.claude ? h("button", { class: "btn new", style: "margin-top:10px", onclick: toggleSessions },
       C.sessions ? "▾ Claude Code sessions" : "▸ Claude Code sessions") : null,
@@ -1124,6 +1129,7 @@ $("chat-new").addEventListener("click", async () => {
 });
 $("chat-panel").addEventListener("click", () => { $("chat-input").value = "/panel"; sendChat(new Event("submit")); });
 $("chat-engine").addEventListener("click", () => $("chat-panel").click());
+$("chat-list").addEventListener("click", () => { $("chat-side").classList.toggle("open"); renderChatSide(); });
 $("chat-more").addEventListener("click", async () => {
   const cur = C.chats.find((c) => c.id === C.id);
   const name = prompt("Rename this chat (or type DELETE to delete it):", cur ? cur.title : "");

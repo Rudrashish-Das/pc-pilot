@@ -437,7 +437,7 @@ def default_settings() -> dict:
 
 # Settings a thread doesn't take from its channel: the channel's Claude Code session is its own conversation.
 NOT_INHERITED = ("cc_session", "cc_session_path", "cc_session_at", "cc_session_setup", "cc_session_ctx",
-                 "cc_session_ctx_limit", "parent")
+                 "cc_session_ctx_limit", "cc_session_pinned", "parent")
 
 
 def inherit_settings(channel_id: int, parent: int) -> None:
@@ -475,6 +475,8 @@ def update_settings(channel_id: int, **changes) -> dict:
         "workspace" in changes and changes["workspace"] != s["workspace"]
     ):
         changes.setdefault("cc_session", None)  # session is tied to backend + workspace
+    if "cc_session" in changes and changes["cc_session"] != s.get("cc_session") and "cc_session_pinned" not in changes:
+        changes["cc_session_pinned"] = bool(changes["cc_session"]) and bool(s.get("cc_session_pinned"))  # a fork stays pinned, /new doesn't
     s.update(changes)
     if s.get("cc_no_ask_until") and (s["cc_perm"] != "full" or s["cc_backend"] == "ollama"):
         s["cc_no_ask_until"] = None  # leaving full access (or moving to the local model) ends "without asking"
@@ -1855,7 +1857,8 @@ class CCSnap:
 
 def session_state(s: dict) -> tuple[str | None, str | None]:
     """(resumable session id, reason it isn't resumable). Sessions only continue in the same workspace folder
-    (by path, not name) and within CC_SESSION_IDLE_MINUTES of their last job."""
+    (by path, not name) and within CC_SESSION_IDLE_MINUTES of their last job (unless picked from the dashboard's
+    session list: cc_session_pinned)."""
     sid = s.get("cc_session")
     if not sid:
         return None, None
@@ -1864,7 +1867,7 @@ def session_state(s: dict) -> tuple[str | None, str | None]:
     if s.get("cc_session_setup") != CC_SETUP_FINGERPRINT:
         return None, "bot's Claude Code setup changed"
     idle_min = (time.time() - (s.get("cc_session_at") or 0)) / 60
-    if CC_SESSION_IDLE_MINUTES > 0 and idle_min >= CC_SESSION_IDLE_MINUTES:
+    if CC_SESSION_IDLE_MINUTES > 0 and idle_min >= CC_SESSION_IDLE_MINUTES and not s.get("cc_session_pinned"):
         return None, f"idle {idle_min:.0f} min"
     return sid, None
 
@@ -2418,8 +2421,11 @@ def cc_prompt(job: CCJob) -> str:
     if SKILLS_ENABLED:
         block, job.skills = skills_mod.prompt_block(job.task, job.snap.resume)
         if block:
-            head += "\n" + block
+            head += "\n" + block + "\n" + MESSAGE_MARK  # so the dashboard can tell the notes from the message
     return f"{head}\n{job.task}"
+
+
+MESSAGE_MARK = "[The user's message:]"
 
 
 # Said in every message, not only the system prompt: permissions change per chat at any time, and a session that

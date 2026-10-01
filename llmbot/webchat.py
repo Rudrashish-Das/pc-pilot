@@ -614,11 +614,28 @@ def _user_text(m: dict) -> str | None:
     if not isinstance(c, str) or not c.strip() or c.lstrip().startswith(("<command-", "<local-command", "<system-")):
         return None
     c = _HEADER.sub("", c).strip()
-    if c.startswith("[Skills you saved"):  # the bot's skill notes come first; the message is after the last note line
-        lines = c.splitlines()
-        last = max((i for i, ln in enumerate(lines) if ln.startswith(("- ", "### ", "[Skills"))), default=-1)
-        c = "\n".join(lines[last + 1:]).strip()
-    return c or None
+    if c.startswith("[Skills you saved"):
+        c = _strip_skill_notes(c)
+    return c.strip() or None
+
+
+def _strip_skill_notes(c: str) -> str:
+    """The message after the skill notes the bot puts first. Newer prompts mark where it starts; in older ones each
+    note ("### name (use when: …)" + body) is matched against the saved skill, and only an edited or deleted one
+    falls back to "the message starts after the note's last list line"."""
+    if core.MESSAGE_MARK in c:
+        return c.split(core.MESSAGE_MARK, 1)[1]
+    rest = c.partition("\n")[2]
+    bodies = {s["name"]: s.get("body") or "" for s in core.skills_mod.all_skills()}
+    while rest.startswith("### "):
+        head, _, after = rest.partition("\n")
+        body = bodies.get(head[4:].split(" (use when:", 1)[0])
+        if not body or not after.startswith(body):
+            lines = rest.splitlines()
+            last = max((i for i, ln in enumerate(lines) if ln.startswith(("- ", "### "))), default=-1)
+            return "\n".join(lines[last + 1:])
+        rest = after[len(body):].lstrip("\n")
+    return rest
 
 
 def _lines(path: Path, max_bytes: int | None = None):
@@ -707,7 +724,7 @@ def open_session(sid: str, workspace: str) -> Chat:
                         "leaves the original alone." if where else "Your next message resumes it."))
     core.update_settings(chat.id, engine="claude", workspace=workspace, cc_session=sid, cc_session_path=str(ws),
                          cc_session_at=time.time(), cc_session_setup=core.CC_SETUP_FINGERPRINT,
-                         cc_session_ctx=None)
+                         cc_session_ctx=None, cc_session_pinned=True)  # picked on purpose: no idle cut-off
     return chat
 
 
