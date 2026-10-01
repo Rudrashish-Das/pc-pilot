@@ -174,6 +174,10 @@ body.chatting #offline { margin-bottom: 8px; }
 .chatbar .btn { padding: 7px 11px; flex: none; }
 .engine { font-size: 12.5px; color: var(--muted); margin: -2px 0 8px; cursor: pointer; }
 .engine b { color: var(--text); font-weight: 600; }
+.viewbar { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); margin: -2px 0 6px;
+  padding: 3px 4px 3px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.viewbar .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.viewbar .btn { padding: 3px 10px; font-size: 12.5px; }
 .msgs { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 4px 2px 12px;
   overscroll-behavior: contain; }
 .msg { max-width: min(88%, 720px); min-width: 0; }
@@ -274,6 +278,7 @@ dialog .row { justify-content: flex-end; }
         <button class="btn" id="chat-more" title="Rename or delete this chat">⋯</button>
       </div>
       <div class="engine" id="chat-engine" title="Change in ⚙️"></div>
+      <div class="viewbar hide" id="view-bar"></div>
       <div class="msgs" id="msgs"></div>
       <div class="composer-wrap" id="composer-wrap">
         <div class="cmds hide" id="cmds" role="listbox"></div>
@@ -939,6 +944,7 @@ function openChat(id) {
   C.id = id; C.v = 0; C.els.clear(); C.rows.clear(); C.job = null; C.typing = false; C.view = null;
   $("chat-side").classList.remove("open");
   $("composer-wrap").classList.remove("hide");
+  $("view-bar").classList.add("hide");
   put($("msgs"));
   try { localStorage.setItem("chat", id); } catch (e) {}
   $("chat-pick").value = id;
@@ -1047,16 +1053,14 @@ async function viewSession(s) {
   if (C.view !== s) return;
   if (r.error) { put($("msgs"), h("div", { class: "small muted" }, r.error)); return; }
   const info = r.session;
-  const bar = h("div", { class: "card", style: "position:sticky;top:0;z-index:2;display:flex;gap:8px;align-items:center;flex-wrap:wrap" },
-    h("div", { style: "flex:1;min-width:200px" }, h("b", {}, info.title),
-      h("div", { class: "small muted" }, `👁️ Read-only · ${info.workspace} · ${ago(info.updated)}` +
-        (info.open ? ` · 🟢 open in ${info.open}: continuing makes a copy` : "")),
-      h("div", { class: "small muted" }, "Session ", h("code", { title: "Click to copy", style: "cursor:copy;user-select:all",
-        onclick: () => copyText(info.id) }, info.id))),
-    h("button", { class: "btn", onclick: () => { C.view = null; openChat(C.id); } }, "Back"),
+  const sid = h("code", { title: info.id + " (click to copy)", style: "cursor:copy", onclick: () => copyText(info.id) }, info.id.slice(0, 8));
+  put($("view-bar"), h("span", { class: "t", title: info.title }, "👁️ Read-only · ", sid, ` · ${info.workspace} · ${ago(info.updated)}` +
+      (info.open ? ` · 🟢 open in ${info.open} (continuing copies it)` : "")),
     h("button", { class: "btn send", onclick: () => info.chat ? (C.view = null, openChat(info.chat)) : openSession(info) },
-      info.chat ? "Open its chat" : "Continue in a chat"));
-  put($("msgs"), bar, r.messages.length ? r.messages.map((m) => msgEl({ ...m, controls: [] }))
+      info.chat ? "Open its chat" : "Continue"),
+    h("button", { class: "btn", title: "Back to the chat", onclick: () => { C.view = null; openChat(C.id); } }, "✕"));
+  $("view-bar").classList.remove("hide");
+  put($("msgs"), r.messages.length ? r.messages.map((m) => msgEl({ ...m, controls: [] }))
     : h("div", { class: "small muted" }, "No messages in this session."));
   toBottom();
 }

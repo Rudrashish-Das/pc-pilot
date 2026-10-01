@@ -624,8 +624,9 @@ def _strip_skill_notes(c: str) -> str:
     """The message after the skill notes the bot puts first. Newer prompts mark where it starts; in older ones each
     note ("### name (use when: …)" + body) is matched against the saved skill, and only an edited or deleted one
     falls back to "the message starts after the note's last list line"."""
-    if core.MESSAGE_MARK in c:
-        return c.split(core.MESSAGE_MARK, 1)[1]
+    mark = re.search(rf"^{re.escape(core.MESSAGE_MARK)}$", c, re.M)  # its own line: a note may quote it
+    if mark:
+        return c[mark.end():]
     rest = c.partition("\n")[2]
     bodies = {s["name"]: s.get("body") or "" for s in core.skills_mod.all_skills()}
     while rest.startswith("### "):
