@@ -7,12 +7,13 @@
     .\scripts\bot_control.ps1 start     Start the bot in the background (no console window)
     .\scripts\bot_control.ps1 stop      Stop the running bot
     .\scripts\bot_control.ps1 restart   Stop, then start (after pulling updates)
+    .\scripts\bot_control.ps1 restart-idle  Restart once no Claude Code job is running (restarts the bot schedules itself)
     .\scripts\bot_control.ps1 status    Show whether it's running / in startup
     .\scripts\bot_control.ps1 log       Tail data\bot.log
     .\scripts\bot_control.ps1 dashboard Print the web dashboard's link (with its access key) and open it here
     .\scripts\bot_control.ps1 firewall  Let phones on your Wi-Fi reach the dashboard (run as administrator, once)
 #>
-param([Parameter(Position = 0)][ValidateSet("install", "remove", "boot", "unboot", "start", "stop", "restart", "status", "log", "dashboard", "firewall")][string]$Action = "status")
+param([Parameter(Position = 0)][ValidateSet("install", "remove", "boot", "unboot", "start", "stop", "restart", "restart-idle", "status", "log", "dashboard", "firewall")][string]$Action = "status")
 
 $Dir      = Split-Path $PSScriptRoot -Parent  # the repo root
 $Pythonw  = Join-Path $Dir ".venv\Scripts\pythonw.exe"
@@ -166,6 +167,18 @@ switch ($Action) {
     "start" { Start-Bot }
     "stop" { Stop-Bot }
     "restart" { Stop-Bot; Start-Sleep -Seconds 2; Start-Bot }
+    "restart-idle" {
+        # The bot's Claude Code runs are `claude -p --output-format stream-json`. A restart scheduled from inside one
+        # waits for it (and any job started after it) to finish and its reply to be posted, so no answer is cut off.
+        $deadline = (Get-Date).AddMinutes(30)
+        $jobs = { @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*stream-json*" -and $_.Name -notlike "powershell*" }) }
+        do {
+            while ((& $jobs).Count -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 5 }
+            Start-Sleep -Seconds 15  # time to post the reply; a message sent meanwhile starts a new job
+        } while ((& $jobs).Count -and (Get-Date) -lt $deadline)
+        "Idle at $(Get-Date -Format HH:mm:ss); restarting"
+        Stop-Bot; Start-Sleep -Seconds 2; Start-Bot
+    }
     "status" {
         $p = Get-BotProcess
         "Running:         " + $(if ($p) { "yes (PID $($p.ProcessId -join ', '))" } else { "no" })
