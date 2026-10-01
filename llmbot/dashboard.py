@@ -580,6 +580,26 @@ async def chat_new(request, fe, chat) -> dict:
     return {"chat": fe.new_chat(str(body.get("title") or "")).summary()}
 
 
+def _owner_sessions() -> None:
+    if not (core.CC_ENABLED and core.is_owner(core.WEB_USER_ID)):
+        raise web.HTTPForbidden(text="Claude Code sessions are for owners (DASHBOARD_CHAT=owner).")
+
+
+async def sessions_list(request, fe, chat) -> dict:
+    _owner_sessions()
+    return {"sessions": await asyncio.to_thread(webchat.list_sessions)}
+
+
+async def session_open(request, fe, chat) -> dict:
+    _owner_sessions()
+    body = await request.json()
+    try:
+        c = await asyncio.to_thread(webchat.open_session, str(body.get("id") or ""), str(body.get("workspace") or ""))
+    except ValueError as e:
+        return {"error": str(e)}
+    return {"chat": c.summary()}
+
+
 async def chat_rename(request, fe, chat) -> dict:
     title = str((await request.json()).get("title") or "").strip()[:60]
     if title:
@@ -664,6 +684,8 @@ def make_app() -> web.Application:
     app.router.add_post("/api/chats/{cid}/modal", _chat_api(chat_modal))
     app.router.add_post("/api/chats/{cid}/rename", _chat_api(chat_rename))
     app.router.add_post("/api/chats/{cid}/delete", _chat_api(chat_delete))
+    app.router.add_get("/api/sessions", _chat_api(sessions_list))
+    app.router.add_post("/api/sessions/open", _chat_api(session_open))
     app.router.add_get("/api/chat-file/{name}", chat_file)
     app.router.add_post("/api/transcribe", _chat_api(chat_transcribe))
     app.router.add_get("/", page)

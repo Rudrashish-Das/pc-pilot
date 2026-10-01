@@ -1004,7 +1004,25 @@ function sizeChat() {
 function renderChatSide() {
   put($("chat-side"), h("button", { class: "btn new", onclick: () => $("chat-new").click() }, "＋ New chat"),
     C.chats.map((c) => h("button", { class: "c" + (c.id === C.id ? " on" : ""), onclick: () => { if (c.id !== C.id) openChat(c.id); } },
-      h("b", {}, c.title), h("span", {}, (c.last || "No messages yet") + " · " + ago(c.updated)))));
+      h("b", {}, c.title), h("span", {}, (c.last || "No messages yet") + " · " + ago(c.updated)))),
+    C.claude ? h("button", { class: "btn new", style: "margin-top:10px", onclick: toggleSessions },
+      C.sessions ? "▾ Claude Code sessions" : "▸ Claude Code sessions") : null,
+    (C.claude && C.sessions || []).map((s) => h("button", { class: "c", title: "Continue this session in a chat",
+      onclick: () => openSession(s) },
+      h("b", {}, s.title), h("span", {}, s.workspace + " · " + ago(s.updated) + " · " + Math.max(1, Math.round(s.size / 1024)) + " KB" + (s.chat ? " · in a chat" : "")))));
+}
+async function toggleSessions() {
+  if (C.sessions) { C.sessions = null; renderChatSide(); return; }
+  try { C.sessions = (await getJSON("/api/sessions")).sessions; } catch (e) { toast(e.message); return; }
+  renderChatSide();
+}
+async function openSession(s) {
+  try {
+    const r = await postJSON("/api/sessions/open", { id: s.id, workspace: s.workspace });
+    if (r.error) { toast(r.error); return; }
+    C.sessions = null;
+    await loadChats(r.chat.id);
+  } catch (e) { toast(e.message); }
 }
 
 $("composer").addEventListener("submit", sendChat);

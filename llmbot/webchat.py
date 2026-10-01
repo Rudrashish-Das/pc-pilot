@@ -17,6 +17,7 @@ bot sends go to data/webchat_files. Buttons only work until the bot restarts, as
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import secrets
@@ -589,6 +590,122 @@ HELP = ("**Chatting from the dashboard**\n"
         + "\n".join(f"/{n}{' ' + a if a else ''}: {d}" for n, a, d in COMMANDS)
         + "\n\n📎 Attach images, PDFs and code for Claude Code. 🎙️ The mic button turns speech into text, "
           "transcribed on the PC.")
+
+
+# =============================================================================
+# Claude Code sessions: every session in the workspaces' folders (the bot's and ones started in a terminal), so
+# the dashboard can list them and continue one in a chat, like `claude --resume`.
+# =============================================================================
+
+SESSION_IMPORT = 60  # messages shown when a session is opened in a chat
+_HEADER = re.compile(r"^\[(Now|Access|Your saved skills)[^\n]*\n?", re.M)
+
+
+def _projects_dir(path: Path) -> Path:
+    """Claude Code keeps a folder's sessions in ~/.claude/projects/<path with every non-alphanumeric as '-'>."""
+    return Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(path))
+
+
+def _user_text(m: dict) -> str | None:
+    """The typed text of a user line (None for tool results, slash-command noise and the bot's headers)."""
+    c = (m.get("message") or {}).get("content")
+    if isinstance(c, list):
+        c = "\n".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
+    if not isinstance(c, str) or not c.strip() or c.lstrip().startswith(("<command-", "<local-command", "<system-")):
+        return None
+    c = _HEADER.sub("", c).strip()
+    if c.startswith("[Skills you saved"):  # the bot's skill notes come first; the message is after the last note line
+        lines = c.splitlines()
+        last = max((i for i, ln in enumerate(lines) if ln.startswith(("- ", "### ", "[Skills"))), default=-1)
+        c = "\n".join(lines[last + 1:]).strip()
+    return c or None
+
+
+def _lines(path: Path, max_bytes: int | None = None):
+    with path.open("rb") as f:
+        data = f.read(max_bytes) if max_bytes else f.read()
+    for raw in data.splitlines():
+        try:
+            m = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(m, dict) and not m.get("isSidechain") and not m.get("isMeta"):
+            yield m
+
+
+def session_info(path: Path, workspace: str) -> dict:
+    title = None
+    for m in _lines(path, 512 * 1024):
+        if m.get("type") == "summary" and m.get("summary"):
+            title = m["summary"]
+            break
+        if m.get("type") == "user" and title is None:
+            title = _user_text(m)
+    st = path.stat()
+    return {"id": path.stem, "workspace": workspace, "title": core.oneline(title or "(no messages)", 80),
+            "updated": st.st_mtime, "size": st.st_size}
+
+
+def list_sessions(limit: int = 100) -> list[dict]:
+    """Newest first, across all workspaces; each says which web chat (if any) is on it."""
+    files = []
+    for name, ws in core.WORKSPACES.items():
+        d = _projects_dir(ws)
+        files += [(p, name) for p in d.glob("*.jsonl")] if d.is_dir() else []
+    files.sort(key=lambda f: -f[0].stat().st_mtime)
+    held = {s.get("cc_session"): cid for cid in (_fe.chats if _fe else {})
+            for s in [core.get_settings(cid)] if s.get("cc_session")}
+    out = []
+    for p, name in files[:limit]:
+        try:
+            info = session_info(p, name)
+        except OSError:
+            continue
+        info["chat"] = str(held[info["id"]]) if info["id"] in held else None
+        out.append(info)
+    return out
+
+
+def session_messages(path: Path, limit: int = SESSION_IMPORT) -> list[tuple[str, str]]:
+    """(role, text) of the conversation's last `limit` messages: what was typed and Claude's replies."""
+    out: list[tuple[str, str]] = []
+    for m in _lines(path):
+        if m.get("type") == "user":
+            t = _user_text(m)
+            if t:
+                out.append(("user", t))
+        elif m.get("type") == "assistant":
+            c = (m.get("message") or {}).get("content") or []
+            t = "\n".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text").strip()
+            if t:
+                if out and out[-1][0] == "bot":  # one reply per turn, as in the chat
+                    out[-1] = ("bot", out[-1][1] + "\n\n" + t)
+                else:
+                    out.append(("bot", t))
+    return [(r, core.clip(t, 4000)) for r, t in out[-limit:]]
+
+
+def open_session(sid: str, workspace: str) -> Chat:
+    """A web chat on that Claude Code session (the one already on it, or a new one with the history copied in);
+    the next message there resumes it."""
+    ws = core.WORKSPACES.get(workspace)
+    if ws is None or not re.fullmatch(r"[0-9a-f-]{36}", sid):
+        raise ValueError("no such session")
+    path = _projects_dir(ws) / f"{sid}.jsonl"
+    if not path.is_file():
+        raise ValueError("no such session")
+    for cid in _fe.chats:
+        if core.get_settings(cid).get("cc_session") == sid:
+            return _fe.chats[cid]
+    chat = _fe.new_chat(session_info(path, workspace)["title"][:60])
+    for role, text in session_messages(path):
+        chat.post(role, text)
+    chat.post("bot", f"-# ↩️ Continuing Claude Code session `{sid[:8]}` in workspace **{workspace}**. "
+                     "Your next message resumes it.")
+    core.update_settings(chat.id, engine="claude", workspace=workspace, cc_session=sid, cc_session_path=str(ws),
+                         cc_session_at=time.time(), cc_session_setup=core.CC_SETUP_FINGERPRINT,
+                         cc_session_ctx=None)
+    return chat
 
 
 def start(core_module) -> WebFrontend:
