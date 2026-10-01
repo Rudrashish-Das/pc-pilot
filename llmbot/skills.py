@@ -97,13 +97,29 @@ def put(name: str, when: str, body: str, *, channel_id: int = 0, user_id: int = 
     return s, old is not None
 
 
+_FENCE = re.compile(r"```.*?(?:```|\Z)", re.S)
+
+
+def outside_code(rx: re.Pattern, text: str) -> list[re.Match]:
+    """Matches of a [[...]] marker regex outside ``` code blocks: a marker shown as an example (explaining the
+    syntax) is left alone instead of saving a skill or deleting a file."""
+    fences = [m.span() for m in _FENCE.finditer(text)]
+    return [m for m in rx.finditer(text) if not any(a <= m.start() < b for a, b in fences)]
+
+
+def remove_matches(text: str, found: list[re.Match]) -> str:
+    for m in reversed(found):
+        text = text[:m.start()] + text[m.end():]
+    return text
+
+
 def extract(text: str, *, allowed: bool, channel_id: int = 0, user_id: int = 0, redact=lambda s: s) -> tuple[str, list[str]]:
     """[[skill: …]] … [[/skill]] blocks in a reply -> saved skills. Returns (text without them, notice lines)."""
     notes: list[str] = []
-    found = list(SKILL_RE.finditer(text))
+    found = outside_code(SKILL_RE, text)
     if not found:
         return text, notes
-    text = SKILL_RE.sub("", text).strip()
+    text = remove_matches(text, found).strip()
     if not allowed:
         return text, ["⚠️ scheduled runs can't save skills"]
     for m in found:

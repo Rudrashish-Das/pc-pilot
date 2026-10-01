@@ -84,6 +84,15 @@ check(p.startswith("/anthropic-skills:pdf summarise it\n\n[Now: ") and "[Access:
       "skill call: stays first, time and access after it")
 job = SimpleNamespace(snap=snap, task="/context", skills=[])
 check(B.cc_prompt(job) == "/context", "other slash commands untouched")
+job = SimpleNamespace(snap=snap, task="/etc/hosts what is this file?", skills=[])
+check(B.cc_prompt(job).startswith("[Now: "), "a path is a message, not a command")
+B._cc_skills.append("MyTool")
+check(B.find_cc_skill("mytool") == ("MyTool", []), "names match regardless of case")
+check(B.cc_prompt(SimpleNamespace(snap=snap, task="/mytool go", skills=[])).startswith("/mytool go\n\n[Now: "),
+      "a skill typed in another case still gets time and access")
+B._cc_skills.remove("MyTool")
+text, notes = S.extract("Format:\n```\n[[skill: demo | x]]\nsteps\n[[/skill]]\n```", allowed=True)
+check(not notes and S.get("demo") is None and "[[skill: demo" in text, "a marker in a code block is only an example")
 cmd = B.build_cc_command("claude", B.replace(snap, perm="read"))
 check("--disable-slash-commands" not in cmd and "--strict-mcp-config" in cmd, "skills on, MCP servers still off")
 check("Read,Glob,Grep,WebSearch,WebFetch,Skill" in cmd and "Skill" in cmd[cmd.index("--allowedTools"):],

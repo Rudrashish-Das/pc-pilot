@@ -2295,6 +2295,8 @@ async def kill_tree(proc: asyncio.subprocess.Process) -> None:
 # Claude Code's skills, as its init event lists them (every job refreshes this; discover_cc_skills at start)
 _cc_skills: list[str] = []
 _cc_skills_at = 0.0  # monotonic time of the last refresh
+_cc_skills_failed_at = -1e9  # ...and of the last failed one: not asked again for CC_SKILLS_RETRY seconds
+CC_SKILLS_RETRY = 300
 _cc_skills_lock = asyncio.Lock()
 
 
@@ -2303,7 +2305,9 @@ async def refresh_cc_skills(max_age: float = 30) -> list[str]:
     ~/.claude/skills/<name>/SKILL.md) is on disk right away, but the list only had what that job started with, so
     /skill <name> said it didn't exist until some later job ran."""
     async with _cc_skills_lock:
-        if time.monotonic() - _cc_skills_at > max_age:
+        now = time.monotonic()
+        # a failed lookup takes up to 60 s; without the pause every /skills or /skill typo started another one
+        if now - _cc_skills_at > max_age and now - _cc_skills_failed_at > CC_SKILLS_RETRY:
             await discover_cc_skills()
     return _cc_skills
 
@@ -2319,10 +2323,11 @@ async def discover_cc_skills() -> list[str]:
            "--tools", "Skill", "--strict-mcp-config", "--setting-sources", "user"]
     kw: dict[str, Any] = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32"
                           else {"start_new_session": True})
-    proc = await asyncio.create_subprocess_exec(*cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                                stderr=subprocess.DEVNULL, cwd=str(WORKSPACES[snap.workspace]),
-                                                env=build_cc_env(snap), limit=16 * 1024 * 1024, **kw)
+    proc = None
     try:
+        proc = await asyncio.create_subprocess_exec(*cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                                    stderr=subprocess.DEVNULL, cwd=str(WORKSPACES[snap.workspace]),
+                                                    env=build_cc_env(snap), limit=16 * 1024 * 1024, **kw)
         proc.stdin.write(b"ok")
         await proc.stdin.drain()
         proc.stdin.close()
@@ -2337,16 +2342,22 @@ async def discover_cc_skills() -> list[str]:
                     return ev.get("skills") or []
             return None
         skills = await asyncio.wait_for(read_init(), 60)
-    except (asyncio.TimeoutError, OSError, BrokenPipeError, ConnectionResetError) as e:
-        log.warning("Couldn't list Claude Code's skills: %s", type(e).__name__)
+    except Exception as e:  # anything (binary gone, odd output): callers such as /skills must still answer
+        log.warning("Couldn't list Claude Code's skills: %s: %s", type(e).__name__, e)
         skills = None
     finally:
-        await kill_tree(proc)
-    if skills is not None:
-        global _cc_skills_at
+        if proc is not None:
+            await kill_tree(proc)
+    global _cc_skills_at, _cc_skills_failed_at
+    if skills is None:
+        _cc_skills_failed_at = time.monotonic()
+    else:
         _cc_skills[:], _cc_skills_at = skills, time.monotonic()
         log.info("Claude Code skills: %d", len(skills))
     return _cc_skills
+
+
+SLASH_NAME = re.compile(r"[A-Za-z][\w-]*(?::[\w-]+)?")  # /context, /pdf, /anthropic-skills:pdf
 
 
 def cc_prompt(job: CCJob) -> str:
@@ -2355,11 +2366,12 @@ def cc_prompt(job: CCJob) -> str:
     head = f"[Now: {now_local():%A %d %B %Y, %H:%M} {TIMEZONE}]\n[Access: {ACCESS_NOTES[job.snap.perm]}]"
     if job.snap.compact:
         return job.task
-    if job.task.strip().startswith("/"):
+    name = job.task.strip()[1:].split(None, 1)[0] if job.task.strip().startswith("/") and job.task.strip()[1:] else ""
+    if SLASH_NAME.fullmatch(name):
         # A slash command only works at the very start; for a skill, the time and access go after it (they become
-        # part of its request text). Other commands (/compact, /context …) are passed on untouched.
-        name = job.task.strip()[1:].split(None, 1)[0] if job.task.strip()[1:] else ""
-        return f"{job.task.rstrip()}\n\n{head}" if name in _cc_skills else job.task
+        # part of its request text). Other commands (/compact, /context …) are passed on untouched. A path such
+        # as "/etc/hosts what's this?" is not a command and is sent like any message.
+        return f"{job.task.rstrip()}\n\n{head}" if name.lower() in {s.lower() for s in _cc_skills} else job.task
     if SKILLS_ENABLED:
         block, job.skills = skills_mod.prompt_block(job.task, job.snap.resume)
         if block:
@@ -2965,7 +2977,8 @@ def plan_deletes(text: str, snap: CCSnap) -> tuple[str, list[Path], list[str]]:
     lines: list[str] = []
     ws = WORKSPACES.get(snap.workspace)
     root = ws.resolve() if ws is not None else None
-    for raw in (m.group(1).strip().strip("`\"'") for m in DELETE_RE.finditer(text)):
+    found = skills_mod.outside_code(DELETE_RE, text)
+    for raw in (m.group(1).strip().strip("`\"'") for m in found):
         name = redact(raw)
         p = (Path(raw) if Path(raw).is_absolute() else (root or Path.cwd()) / raw).resolve()
         if snap.perm not in ("edit", "full"):
@@ -2979,7 +2992,7 @@ def plan_deletes(text: str, snap: CCSnap) -> tuple[str, list[Path], list[str]]:
         elif p not in paths:
             paths.append(p)
             lines.append(f"🗑️ deleted `{p.relative_to(root).as_posix()}` from the workspace")
-    return DELETE_RE.sub("", text).strip(), paths, lines
+    return skills_mod.remove_matches(text, found).strip(), paths, lines
 
 
 def extract_attachments(text: str, workspace: Path) -> tuple[str, list[discord.File], list[str]]:
@@ -2990,7 +3003,8 @@ def extract_attachments(text: str, workspace: Path) -> tuple[str, list[discord.F
     notes: list[str] = []
     root = workspace.resolve()
     seen: set[Path] = set()
-    for raw in (m.group(1).strip().strip("`\"'") for m in ATTACH_RE.finditer(text)):
+    found = skills_mod.outside_code(ATTACH_RE, text)
+    for raw in (m.group(1).strip().strip("`\"'") for m in found):
         p = Path(raw)
         p = (p if p.is_absolute() else root / p).resolve()
         name = redact(raw)
@@ -3014,7 +3028,7 @@ def extract_attachments(text: str, workspace: Path) -> tuple[str, list[discord.F
             except UnicodeDecodeError:
                 pass
             files.append(discord.File(io.BytesIO(data), filename=p.name))
-    return ATTACH_RE.sub("", text).strip(), files, notes
+    return skills_mod.remove_matches(text, found).strip(), files, notes
 
 
 def result_text(job: CCJob, chat: bool = False) -> tuple[str, list[discord.File], list[str]]:
@@ -3474,8 +3488,9 @@ def find_cc_skill(name: str) -> tuple[str | None, list[str]]:
     name = name.strip().lstrip("/").lower()
     if not _cc_skills:
         return (name or None), []  # list not known yet: let Claude Code decide
-    if name in _cc_skills:
-        return name, []
+    exact = [s for s in _cc_skills if s.lower() == name]  # names keep their case (~/.claude/skills/MyTool)
+    if exact:
+        return exact[0], []
     short = [s for s in _cc_skills if s.split(":")[-1].lower() == name]
     if len(short) == 1:
         return short[0], []
