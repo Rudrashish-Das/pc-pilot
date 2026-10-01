@@ -1850,6 +1850,7 @@ class CCSnap:
     resume: str | None = None
     note: str | None = None  # shown as the first progress line (e.g. why a new session started)
     compact: bool = False  # a /compact run (needs slash commands, which the lean flags disable)
+    fork: bool = False  # resume into a new session id (the original is open in a terminal)
 
 
 def session_state(s: dict) -> tuple[str | None, str | None]:
@@ -1868,11 +1869,53 @@ def session_state(s: dict) -> tuple[str | None, str | None]:
     return sid, None
 
 
+def _pid_alive(pid: int) -> bool:
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+            return True
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+    import ctypes  # os.kill(pid, 0) would terminate the process on Windows
+    k32 = ctypes.windll.kernel32
+    h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return False
+    code = ctypes.c_ulong()
+    ok = k32.GetExitCodeProcess(h, ctypes.byref(code))
+    k32.CloseHandle(h)
+    return bool(ok) and code.value == 259  # STILL_ACTIVE
+
+
+def session_open_elsewhere(sid: str | None) -> str | None:
+    """How the session is open outside the bot (a terminal, an IDE: e.g. "cli"), or None. Claude Code registers each
+    running process in ~/.claude/sessions/<pid>.json; the bot's own runs are "sdk-cli" (claude -p)."""
+    d = Path.home() / ".claude" / "sessions"
+    if not sid or not d.is_dir():
+        return None
+    for p in d.glob("*.json"):
+        try:
+            info = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (isinstance(info, dict) and info.get("sessionId") == sid and info.get("entrypoint") != "sdk-cli"
+                and isinstance(info.get("pid"), int) and _pid_alive(info["pid"])):
+            return str(info.get("entrypoint") or info.get("kind") or "another program")
+    return None
+
+
 def snapshot(channel_id: int, resume: bool = False) -> CCSnap:
     s = get_settings(channel_id)
     sid, why = session_state(s) if resume else (None, None)
     note = f"🆕 New session ({why}; saves re-sending the old history)" if why else None
-    return CCSnap(s["cc_backend"], s["cc_model"], s["cc_perm"], s["workspace"], sid, note)
+    fork = False
+    if sid and (where := session_open_elsewhere(sid)):
+        fork = True  # two processes writing one session file would interleave it; continue a copy instead
+        note = (f"🔀 That session is still open elsewhere ({where}), so this continues a copy of it; "
+                "the copy is this chat's session from now on")
+    return CCSnap(s["cc_backend"], s["cc_model"], s["cc_perm"], s["workspace"], sid, note, fork=fork)
 
 
 # ---- Local web tools for Claude Code on Ollama / custom backends ---------------------------------------------
@@ -2060,7 +2103,7 @@ def build_cc_command(binary: str, snap: CCSnap) -> list[str]:
     if CC_MAX_BUDGET_USD > 0 and snap.backend == "anthropic":
         cmd += ["--max-budget-usd", f"{CC_MAX_BUDGET_USD:g}"]
     if snap.resume:
-        cmd += ["--resume", snap.resume]
+        cmd += ["--resume", snap.resume] + (["--fork-session"] if snap.fork else [])
     if snap.perm != "full":
         cmd += SANDBOX_ARGS
     return cmd + perm_args(snap)  # --allowedTools is variadic, keep it last

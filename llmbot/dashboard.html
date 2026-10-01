@@ -1009,7 +1009,7 @@ function renderChatSide() {
       C.sessions ? "▾ Claude Code sessions" : "▸ Claude Code sessions") : null,
     (C.claude && C.sessions || []).map((s) => h("button", { class: "c", title: "Continue this session in a chat",
       onclick: () => openSession(s) },
-      h("b", {}, s.title), h("span", {}, s.workspace + " · " + ago(s.updated) + " · " + Math.max(1, Math.round(s.size / 1024)) + " KB" + (s.chat ? " · in a chat" : "")))));
+      h("b", {}, s.title), h("span", {}, s.workspace + " · " + ago(s.updated) + " · " + Math.max(1, Math.round(s.size / 1024)) + " KB" + (s.chat ? " · in a chat" : "") + (s.open ? " · 🟢 open in " + s.open + " (continues a copy)" : "")))));
 }
 async function toggleSessions() {
   if (C.sessions) { C.sessions = null; renderChatSide(); return; }

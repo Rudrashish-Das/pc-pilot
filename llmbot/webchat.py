@@ -662,6 +662,7 @@ def list_sessions(limit: int = 100) -> list[dict]:
         except OSError:
             continue
         info["chat"] = str(held[info["id"]]) if info["id"] in held else None
+        info["open"] = core.session_open_elsewhere(info["id"])  # e.g. still running in a terminal
         out.append(info)
     return out
 
@@ -700,8 +701,10 @@ def open_session(sid: str, workspace: str) -> Chat:
     chat = _fe.new_chat(session_info(path, workspace)["title"][:60])
     for role, text in session_messages(path):
         chat.post(role, text)
+    where = core.session_open_elsewhere(sid)
     chat.post("bot", f"-# ↩️ Continuing Claude Code session `{sid[:8]}` in workspace **{workspace}**. "
-                     "Your next message resumes it.")
+                     + (f"It's still open elsewhere ({where}), so your next message continues a copy of it and "
+                        "leaves the original alone." if where else "Your next message resumes it."))
     core.update_settings(chat.id, engine="claude", workspace=workspace, cc_session=sid, cc_session_path=str(ws),
                          cc_session_at=time.time(), cc_session_setup=core.CC_SETUP_FINGERPRINT,
                          cc_session_ctx=None)
