@@ -590,6 +590,15 @@ async def sessions_list(request, fe, chat) -> dict:
     return {"sessions": await asyncio.to_thread(webchat.list_sessions)}
 
 
+async def session_view(request, fe, chat) -> dict:
+    _owner_sessions()
+    try:
+        return await asyncio.to_thread(webchat.view_session, request.query.get("id") or "",
+                                       request.query.get("workspace") or "")
+    except ValueError as e:
+        return {"error": str(e)}
+
+
 async def session_open(request, fe, chat) -> dict:
     _owner_sessions()
     body = await request.json()
@@ -685,6 +694,7 @@ def make_app() -> web.Application:
     app.router.add_post("/api/chats/{cid}/rename", _chat_api(chat_rename))
     app.router.add_post("/api/chats/{cid}/delete", _chat_api(chat_delete))
     app.router.add_get("/api/sessions", _chat_api(sessions_list))
+    app.router.add_get("/api/sessions/view", _chat_api(session_view))
     app.router.add_post("/api/sessions/open", _chat_api(session_open))
     app.router.add_get("/api/chat-file/{name}", chat_file)
     app.router.add_post("/api/transcribe", _chat_api(chat_transcribe))

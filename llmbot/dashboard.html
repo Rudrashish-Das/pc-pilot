@@ -275,7 +275,7 @@ dialog .row { justify-content: flex-end; }
       </div>
       <div class="engine" id="chat-engine" title="Change in ⚙️"></div>
       <div class="msgs" id="msgs"></div>
-      <div class="composer-wrap">
+      <div class="composer-wrap" id="composer-wrap">
         <div class="cmds hide" id="cmds" role="listbox"></div>
         <div class="attached" id="attached"></div>
         <form class="composer" id="composer">
@@ -925,8 +925,9 @@ async function loadChats(selectId) {
 }
 
 function openChat(id) {
-  C.id = id; C.v = 0; C.els.clear(); C.rows.clear(); C.job = null; C.typing = false;
+  C.id = id; C.v = 0; C.els.clear(); C.rows.clear(); C.job = null; C.typing = false; C.view = null;
   $("chat-side").classList.remove("open");
+  $("composer-wrap").classList.remove("hide");
   put($("msgs"));
   try { localStorage.setItem("chat", id); } catch (e) {}
   $("chat-pick").value = id;
@@ -936,7 +937,7 @@ function openChat(id) {
 
 async function pollChat() {
   clearTimeout(C.timer);
-  if (S.tab !== "chat" || !C.id || document.hidden) return;
+  if (S.tab !== "chat" || !C.id || document.hidden || C.view) return;
   const id = C.id;
   try {
     const data = await getJSON(`/api/chats/${id}?since=${C.v}`);
@@ -1012,14 +1013,39 @@ function renderChatSide() {
       h("b", {}, c.title), h("span", {}, (c.last || "No messages yet") + " · " + ago(c.updated)))),
     C.claude ? h("button", { class: "btn new", style: "margin-top:10px", onclick: toggleSessions },
       C.sessions ? "▾ Claude Code sessions" : "▸ Claude Code sessions") : null,
-    (C.claude && C.sessions || []).map((s) => h("button", { class: "c", title: "Continue this session in a chat",
-      onclick: () => openSession(s) },
+    (C.claude && C.sessions || []).map((s) => h("button", { class: "c" + (C.view && C.view.id === s.id ? " on" : ""),
+      title: "Read this session (nothing is resumed until you press Continue)", onclick: () => viewSession(s) },
       h("b", {}, s.title), h("span", {}, s.workspace + " · " + ago(s.updated) + " · " + Math.max(1, Math.round(s.size / 1024)) + " KB" + (s.chat ? " · in a chat" : "") + (s.open ? " · 🟢 open in " + s.open + " (continues a copy)" : "")))));
 }
 async function toggleSessions() {
   if (C.sessions) { C.sessions = null; renderChatSide(); return; }
   try { C.sessions = (await getJSON("/api/sessions")).sessions; } catch (e) { toast(e.message); return; }
   renderChatSide();
+}
+// a session opens read-only; only Continue makes a chat on it (or goes to the chat already on it)
+async function viewSession(s) {
+  clearTimeout(C.timer);
+  C.view = s;
+  $("chat-side").classList.remove("open");
+  $("composer-wrap").classList.add("hide");
+  renderChatSide();
+  put($("msgs"), h("div", { class: "small muted" }, "Loading…"));
+  let r;
+  try { r = await getJSON(`/api/sessions/view?id=${encodeURIComponent(s.id)}&workspace=${encodeURIComponent(s.workspace)}`); }
+  catch (e) { toast(e.message); return; }
+  if (C.view !== s) return;
+  if (r.error) { put($("msgs"), h("div", { class: "small muted" }, r.error)); return; }
+  const info = r.session;
+  const bar = h("div", { class: "card", style: "position:sticky;top:0;z-index:2;display:flex;gap:8px;align-items:center;flex-wrap:wrap" },
+    h("div", { style: "flex:1;min-width:200px" }, h("b", {}, info.title),
+      h("div", { class: "small muted" }, `👁️ Read-only · ${info.workspace} · ${ago(info.updated)}` +
+        (info.open ? ` · 🟢 open in ${info.open}: continuing makes a copy` : ""))),
+    h("button", { class: "btn", onclick: () => { C.view = null; openChat(C.id); } }, "Back"),
+    h("button", { class: "btn send", onclick: () => info.chat ? (C.view = null, openChat(info.chat)) : openSession(info) },
+      info.chat ? "Open its chat" : "Continue in a chat"));
+  put($("msgs"), bar, r.messages.length ? r.messages.map((m) => msgEl({ ...m, controls: [] }))
+    : h("div", { class: "small muted" }, "No messages in this session."));
+  toBottom();
 }
 async function openSession(s) {
   try {

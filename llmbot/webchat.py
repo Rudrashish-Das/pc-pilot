@@ -17,6 +17,7 @@ bot sends go to data/webchat_files. Buttons only work until the bot restarts, as
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import json
 import logging
 import re
@@ -684,40 +685,59 @@ def list_sessions(limit: int = 100) -> list[dict]:
     return out
 
 
-def session_messages(path: Path, limit: int = SESSION_IMPORT) -> list[tuple[str, str]]:
-    """(role, text) of the conversation's last `limit` messages: what was typed and Claude's replies."""
-    out: list[tuple[str, str]] = []
+def session_messages(path: Path, limit: int = SESSION_IMPORT) -> list[dict]:
+    """{role, text, ts} of the conversation's last `limit` messages: what was typed and Claude's replies."""
+    out: list[dict] = []
     for m in _lines(path):
+        try:
+            ts = datetime.fromisoformat(str(m.get("timestamp")).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            ts = None
         if m.get("type") == "user":
             t = _user_text(m)
             if t:
-                out.append(("user", t))
+                out.append({"role": "user", "text": t, "ts": ts})
         elif m.get("type") == "assistant":
             c = (m.get("message") or {}).get("content") or []
             t = "\n".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text").strip()
             if t:
-                if out and out[-1][0] == "bot":  # one reply per turn, as in the chat
-                    out[-1] = ("bot", out[-1][1] + "\n\n" + t)
+                if out and out[-1]["role"] == "bot":  # one reply per turn, as in the chat
+                    out[-1]["text"] += "\n\n" + t
                 else:
-                    out.append(("bot", t))
-    return [(r, core.clip(t, 4000)) for r, t in out[-limit:]]
+                    out.append({"role": "bot", "text": t, "ts": ts})
+    return [dict(r, text=core.clip(r["text"], 4000)) for r in out[-limit:]]
 
 
-def open_session(sid: str, workspace: str) -> Chat:
-    """A web chat on that Claude Code session (the one already on it, or a new one with the history copied in);
-    the next message there resumes it."""
+def session_path(sid: str, workspace: str) -> Path:
     ws = core.WORKSPACES.get(workspace)
     if ws is None or not re.fullmatch(r"[0-9a-f-]{36}", sid):
         raise ValueError("no such session")
     path = _projects_dir(ws) / f"{sid}.jsonl"
     if not path.is_file():
         raise ValueError("no such session")
+    return path
+
+
+def view_session(sid: str, workspace: str, limit: int = 300) -> dict:
+    """Read-only look at a session: nothing is created or resumed."""
+    path = session_path(sid, workspace)
+    info = session_info(path, workspace)
+    info["open"] = core.session_open_elsewhere(sid)
+    info["chat"] = next((str(cid) for cid in _fe.chats if core.get_settings(cid).get("cc_session") == sid), None)
+    return {"session": info, "messages": session_messages(path, limit)}
+
+
+def open_session(sid: str, workspace: str) -> Chat:
+    """A web chat on that Claude Code session (the one already on it, or a new one with the history copied in);
+    the next message there resumes it."""
+    path = session_path(sid, workspace)
+    ws = core.WORKSPACES[workspace]
     for cid in _fe.chats:
         if core.get_settings(cid).get("cc_session") == sid:
             return _fe.chats[cid]
     chat = _fe.new_chat(session_info(path, workspace)["title"][:60])
-    for role, text in session_messages(path):
-        chat.post(role, text)
+    for row in session_messages(path):
+        chat.post(row["role"], row["text"])
     where = core.session_open_elsewhere(sid)
     chat.post("bot", f"-# ↩️ Continuing Claude Code session `{sid[:8]}` in workspace **{workspace}**. "
                      + (f"It's still open elsewhere ({where}), so your next message continues a copy of it and "
