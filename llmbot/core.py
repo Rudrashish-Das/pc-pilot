@@ -3591,12 +3591,15 @@ async def handle_prompt(channel, user_id: int, prompt: str, out: Out, attachment
     await answer_local(channel, user_id, prompt, out, allow_propose=(engine == "auto"))
 
 
-async def run_scheduled_task(task_id: str) -> None:
+async def run_scheduled_task(task_id: str, run_by: int | None = None) -> None:
+    """Runs a task: from the scheduler, or now from /tasks (run_by: who pressed Run now; its schedule is unchanged)."""
     task = _tasks.get(task_id)
     if not task:
         return
     if task.get("at"):  # one-shot: remove before running so a crash can't repeat it
         _tasks.pop(task_id, None)
+        if run_by is not None and scheduler.get_job(task_id):
+            scheduler.remove_job(task_id)  # run early: it doesn't run again when it's due
         _save_tasks()
     channel = await resolve_channel(task["channel_id"])
     if channel is None:
@@ -3604,7 +3607,9 @@ async def run_scheduled_task(task_id: str) -> None:
         return
     uid = task["created_by"]
     head = f"⏰ <@{uid}> **{task['description']}** · `{task_id}`"
-    if task.get("at") and now_local() - datetime.fromisoformat(task["at"]) > REMINDER_LATE:
+    if run_by is not None:
+        head += f"\n-# run now by <@{run_by}>"
+    elif task.get("at") and now_local() - datetime.fromisoformat(task["at"]) > REMINDER_LATE:
         head += f"\n-# late: was due {discord.utils.format_dt(datetime.fromisoformat(task['at']), 'f')} (bot was offline or the PC was asleep)"
     task_defaults(task)
     authority = task_authority(task)  # re-checked every run: OWNER_IDS may have changed since it was allowed
@@ -4125,6 +4130,9 @@ class TaskEditView(GuardedView):
                                     emoji="🔕" if on else "🔔", style=discord.ButtonStyle.secondary)
             rem.callback = self.on_reminders
             self.add_item(rem)
+        run = discord.ui.Button(custom_id="te:run", label="Run now", emoji="▶️", style=discord.ButtonStyle.success)
+        run.callback = self.on_run
+        self.add_item(run)
         back = discord.ui.Button(custom_id="te:back", label="Back", emoji="⬅️", style=discord.ButtonStyle.primary)
         back.callback = self.on_back
         self.add_item(back)
@@ -4181,6 +4189,17 @@ class TaskEditView(GuardedView):
         t = _tasks.get(self.task_id)
         await self._show(inter, await update_task(self.task_id, inter.user.id,
                                                   reminders=not (t or {}).get("reminders")))
+
+    async def on_run(self, inter):
+        t = _tasks.get(self.task_id)
+        if not t:
+            await self._show(inter, "That task is gone (cancelled, or a one-shot that already ran).")
+            return
+        _spawn(run_scheduled_task(self.task_id, run_by=inter.user.id))
+        note = "▶️ Running now; the result is posted in its chat."
+        if t.get("at"):
+            note += " It was a one-shot, so it won't run again."
+        await self._show(inter, note)
 
     async def on_back(self, inter):
         self.stop()
