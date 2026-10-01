@@ -286,7 +286,7 @@ class Chat:
         last = self.messages[-1] if self.messages else None
         return {"id": str(self.id), "title": self.title, "updated": self.updated, "count": len(self.messages),
                 "engine": s["engine"], "local_model": s["local_model"], "cc_model": s["cc_model"],
-                "cc_backend": s["cc_backend"], "last": (last["text"] or (last.get("embed") or {}).get("title") or "")[:120]
+                "cc_backend": s["cc_backend"], "cc_session": s.get("cc_session"), "last": (last["text"] or (last.get("embed") or {}).get("title") or "")[:120]
                 if last else ""}
 
 

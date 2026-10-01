@@ -806,6 +806,14 @@ function toast(text) {
   document.body.append(t);
   setTimeout(() => t.remove(), 3500);
 }
+function copyText(text) {  // navigator.clipboard needs https; plain http on the LAN uses the old way
+  const done = () => toast("Copied " + text);
+  if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(text).then(done, () => toast(text)); return; }
+  const t = h("textarea", { style: "position:fixed;opacity:0" });
+  t.value = text; document.body.append(t); t.select();
+  try { document.execCommand("copy") ? done() : toast(text); } catch (e) { toast(text); }
+  t.remove();
+}
 async function postJSON(url, body) {
   const r = await fetch(url, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
   if (r.status === 401) { location.href = "/"; throw new Error("signed out"); }
@@ -898,7 +906,10 @@ function applyChat(data) {
   if (s) {
     const eng = { local: "💻 Local", claude: "🤖 Claude Code", auto: "✨ Auto" }[s.engine] || s.engine;
     const model = s.engine === "claude" ? `${s.cc_model}${s.cc_backend !== "anthropic" ? " on " + s.cc_backend : ""}` : s.local_model;
-    put($("chat-engine"), h("b", {}, eng), " · ", model, " · tap ⚙️ to change");
+    put($("chat-engine"), h("b", {}, eng), " · ", model,
+      s.cc_session ? [" · session ", h("code", { title: s.cc_session + " (click to copy)", style: "cursor:copy",
+        onclick: (e) => { e.stopPropagation(); copyText(s.cc_session); } }, s.cc_session.slice(0, 8))] : null,
+      " · tap ⚙️ to change");
     const opt = [...$("chat-pick").options].find((o) => o.value === s.id);
     if (opt && opt.textContent !== s.title) opt.textContent = s.title;
     const k = C.chats.findIndex((c) => c.id === s.id);
@@ -1015,7 +1026,7 @@ function renderChatSide() {
       C.sessions ? "▾ Claude Code sessions" : "▸ Claude Code sessions") : null,
     (C.claude && C.sessions || []).map((s) => h("button", { class: "c" + (C.view && C.view.id === s.id ? " on" : ""),
       title: "Read this session (nothing is resumed until you press Continue)", onclick: () => viewSession(s) },
-      h("b", {}, s.title), h("span", {}, s.workspace + " · " + ago(s.updated) + " · " + Math.max(1, Math.round(s.size / 1024)) + " KB" + (s.chat ? " · in a chat" : "") + (s.open ? " · 🟢 open in " + s.open + " (continues a copy)" : "")))));
+      h("b", {}, s.title), h("span", {}, s.id.slice(0, 8) + " · " + s.workspace + " · " + ago(s.updated) + " · " + Math.max(1, Math.round(s.size / 1024)) + " KB" + (s.chat ? " · in a chat" : "") + (s.open ? " · 🟢 open in " + s.open + " (continues a copy)" : "")))));
 }
 async function toggleSessions() {
   if (C.sessions) { C.sessions = null; renderChatSide(); return; }
@@ -1039,7 +1050,9 @@ async function viewSession(s) {
   const bar = h("div", { class: "card", style: "position:sticky;top:0;z-index:2;display:flex;gap:8px;align-items:center;flex-wrap:wrap" },
     h("div", { style: "flex:1;min-width:200px" }, h("b", {}, info.title),
       h("div", { class: "small muted" }, `👁️ Read-only · ${info.workspace} · ${ago(info.updated)}` +
-        (info.open ? ` · 🟢 open in ${info.open}: continuing makes a copy` : ""))),
+        (info.open ? ` · 🟢 open in ${info.open}: continuing makes a copy` : "")),
+      h("div", { class: "small muted" }, "Session ", h("code", { title: "Click to copy", style: "cursor:copy;user-select:all",
+        onclick: () => copyText(info.id) }, info.id))),
     h("button", { class: "btn", onclick: () => { C.view = null; openChat(C.id); } }, "Back"),
     h("button", { class: "btn send", onclick: () => info.chat ? (C.view = null, openChat(info.chat)) : openSession(info) },
       info.chat ? "Open its chat" : "Continue in a chat"));
