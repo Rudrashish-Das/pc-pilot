@@ -466,7 +466,7 @@ async def state(request: web.Request) -> dict:
                                **_names(a.get("channel_id"), a.get("user_id"))} for a in list(core._inflight.values())],
                  "whisper_loaded": core._whisper is not None,
                  "power": {**pending, **_names(pending.get("channel_id"), pending.get("user_id"))} if pending else None},
-        "spend": {"today": core.spent_today(), "daily_budget": core.CC_DAILY_BUDGET_USD,
+        "spend": {"today": core.spent_today(), "daily_budget": core.daily_cap(),
                   "job_budget": core.CC_MAX_BUDGET_USD,
                   "jobs_today": core._usage.get("jobs", 0) if core._usage.get("date") == core.now_local().date().isoformat() else 0,
                   "plan": [{"label": label, "used": used, "resets_at": resets} for label, used, resets in core.plan_windows()],

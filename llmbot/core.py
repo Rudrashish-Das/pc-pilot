@@ -2539,11 +2539,34 @@ def add_spend(usd: float) -> None:
     STORE.save("usage", USAGE_FILE, _usage)
 
 
+def cap_extra() -> float | None:
+    """Extra USD the owner allowed on top of the daily cap today (/panel → ⚙️ Settings): 0 = none, None = no cap today."""
+    if _usage.get("extra_date") != now_local().date().isoformat():
+        return 0.0
+    extra = _usage.get("extra", 0.0)
+    return None if extra is None else float(extra)
+
+
+def set_cap_extra(extra: float | None) -> None:
+    """extra: USD to add to today's cap, None = no cap for the rest of today, 0 = back to the normal cap."""
+    _usage.update(extra_date=now_local().date().isoformat(), extra=extra)
+    STORE.save("usage", USAGE_FILE, _usage)
+
+
+def daily_cap() -> float:
+    """Today's Claude Code cap in USD (CC_DAILY_BUDGET_USD plus what the owner allowed today); 0 = no cap."""
+    extra = cap_extra()
+    if CC_DAILY_BUDGET_USD <= 0 or extra is None:
+        return 0.0
+    return CC_DAILY_BUDGET_USD + extra
+
+
 def budget_block(snap: CCSnap) -> str | None:
     """Refusal message if the daily Claude Code budget is used up (Anthropic backend only)."""
-    if snap.backend == "anthropic" and CC_DAILY_BUDGET_USD > 0 and spent_today() >= CC_DAILY_BUDGET_USD:
-        return (f"💸 Daily Claude Code budget reached (${spent_today():.2f} of ${CC_DAILY_BUDGET_USD:g}, API-equivalent). "
-                "It resets at midnight; raise CC_DAILY_BUDGET_USD in .env to allow more.")
+    cap = daily_cap()
+    if snap.backend == "anthropic" and cap > 0 and spent_today() >= cap:
+        return (f"💸 Daily Claude Code budget reached (${spent_today():.2f} of ${cap:g}, API-equivalent). "
+                "It resets at midnight; an owner can go past it in /panel → ⚙️ Settings → 💸 Daily cap.")
     return None
 
 
@@ -2708,7 +2731,7 @@ def usage_embed(channel_id: int) -> discord.Embed:
         e.add_field(name="Plan usage limits", inline=False, value=(
             "Not known yet: they're reported after a Claude Code job on the Anthropic backend (claude.ai login). "
             "🔄 checks now."))
-    cap = CC_DAILY_BUDGET_USD
+    cap = daily_cap()
     today = spent_today()
     jobs = _usage.get("jobs", 0) if _usage.get("date") == now_local().date().isoformat() else 0
     spend = (f"`{bar(today / cap)}` ${today:.2f} of ${cap:g} daily cap" if cap > 0 else f"${today:.2f} today (no daily cap)")
@@ -3107,7 +3130,7 @@ def chat_stats(job: CCJob, notes: list[str]) -> str:
             parts.append(fmt_usd(job.cost_this))
         elif job.cost_session is not None:
             parts.append(f"session {fmt_usd(job.cost_session)}")
-        cap = f"/${CC_DAILY_BUDGET_USD:g}" if CC_DAILY_BUDGET_USD > 0 else ""
+        cap = f"/${daily_cap():g}" if daily_cap() > 0 else ""
         parts.append(f"today ${spent_today():.2f}{cap}")
         warn, short = plan_stats(getattr(job.channel, "id", 0))
         if warn:
@@ -3260,7 +3283,7 @@ def panel_embed(channel_id: int) -> discord.Embed:
     if _cc_waiting:
         busy += f" · {_cc_waiting} queued"
     e.add_field(name="CC status", value=busy)
-    cap = f" of ${CC_DAILY_BUDGET_USD:g}" if CC_DAILY_BUDGET_USD > 0 else ""
+    cap = f" of ${daily_cap():g}" if daily_cap() > 0 else (" · no cap today" if CC_DAILY_BUDGET_USD > 0 else "")
     e.add_field(name="CC spend today", value=f"${spent_today():.2f}{cap} · {'lean' if not CC_EXTRAS else 'extras on'}"
                 + (f" · effort {CC_EFFORT}" if CC_EFFORT else ""))
     if wins := plan_windows():
@@ -3818,8 +3841,20 @@ def perm_embed(channel_id: int) -> discord.Embed:
             f"☠️ **Doesn't ask**, {no_ask_text(until)}: your Claude Code messages run right away" if until else
             "Asks before every Claude Code job" + (" (on Ollama it always asks)" if s["cc_backend"] == "ollama" else "")))
     e.add_field(name="Workspace", value=redact(f"`{s['workspace']}` → `{WORKSPACES[s['workspace']]}`"), inline=False)
+    if CC_DAILY_BUDGET_USD > 0:
+        e.add_field(name="Daily cap", inline=False, value=cap_text())
     e.set_footer(text="Changing the workspace starts a new Claude Code session.")
     return e
+
+
+def cap_text() -> str:
+    extra = cap_extra()
+    spent = f"${spent_today():.2f} spent today"
+    if extra is None:
+        return f"💸 **No cap for the rest of today** ({spent}; ${CC_DAILY_BUDGET_USD:g} again from midnight)"
+    if extra:
+        return f"💸 **${daily_cap():g} today** (${CC_DAILY_BUDGET_USD:g} + ${extra:g} extra; {spent})"
+    return f"**${CC_DAILY_BUDGET_USD:g} a day** ({spent})"
 
 
 class PermView(GuardedView):
@@ -3859,6 +3894,10 @@ class PermView(GuardedView):
                                       label="Ask again before full access" if on else "Full access without asking")
             noask.callback = self.on_noask
             self.add_item(noask)
+        if CC_DAILY_BUDGET_USD > 0:
+            cap = discord.ui.Button(custom_id="pv:cap", label="Daily cap", emoji="💸", style=discord.ButtonStyle.secondary)
+            cap.callback = self.on_cap
+            self.add_item(cap)
         if is_telegram_id(channel_id):  # Telegram can't show small grey text (Discord's rows are full anyway)
             off = s["tg_stats"] == "off"
             stats = discord.ui.Button(custom_id="pv:stats", label="Stats line: show" if off else "Stats line: turn off",
@@ -3895,6 +3934,13 @@ class PermView(GuardedView):
         update_settings(self.channel_id, tg_stats="spoiler" if off else "off")
         await self._refresh(inter)
 
+    async def on_cap(self, inter):
+        self.stop()
+        e = discord.Embed(title="💸 Daily cap", color=COLOR_RUN, description=(
+            f"{cap_text()}\n\nGo past it for today only; it's back to ${CC_DAILY_BUDGET_USD:g} at midnight. "
+            "Applies to all chats (Anthropic backend, API-equivalent USD)."))
+        await inter.response.edit_message(embed=e, view=CapView(self.channel_id))
+
     async def on_noask(self, inter):
         if no_ask_until(self.channel_id) is not None:  # turning it off needs no confirmation
             set_no_ask(self.channel_id, None)
@@ -3911,6 +3957,39 @@ class PermView(GuardedView):
             + ("" if is_subchannel(self.channel_id) else
                "\n\nThis also covers this chat's threads (Discord threads, Telegram topics), including new ones.")))
         await inter.response.edit_message(embed=e, view=NoAskConfirmView(self.channel_id))
+
+
+class CapView(GuardedView):
+    """Going past the daily Claude Code cap for the rest of today: owners only."""
+    owner_all = True
+
+    def __init__(self, channel_id: int):
+        super().__init__(timeout=120)
+        self.channel_id = channel_id
+        step = CC_DAILY_BUDGET_USD
+        for cid, label, emoji, style, extra in [
+            ("cap:more", f"+${step:g} today", "➕", discord.ButtonStyle.primary, "more"),
+            ("cap:off", "No cap today", "♾️", discord.ButtonStyle.danger, None),
+            ("cap:reset", "Normal cap", "↩️", discord.ButtonStyle.secondary, 0.0),
+            ("cap:back", "Back", "⬅️", discord.ButtonStyle.secondary, "back"),
+        ]:
+            if extra == 0.0 and cap_extra() == 0.0:
+                continue
+            b = discord.ui.Button(custom_id=cid, label=label, emoji=emoji, style=style)
+            b.callback = self._pick(extra)
+            self.add_item(b)
+
+    def _pick(self, extra):
+        async def cb(inter: discord.Interaction):
+            self.stop()
+            if extra != "back":
+                new = (cap_extra() or 0.0) + CC_DAILY_BUDGET_USD if extra == "more" else extra
+                set_cap_extra(new)
+                what = "no cap today" if new is None else f"${daily_cap():g} today"
+                log.info("Daily cap set to %s by %s", what, inter.user.id)
+                note_event("bot", f"Daily cap: {what}", channel_id=self.channel_id, user_id=inter.user.id)
+            await inter.response.edit_message(embed=perm_embed(self.channel_id), view=PermView(self.channel_id))
+        return cb
 
 
 class NoAskConfirmView(GuardedView):
