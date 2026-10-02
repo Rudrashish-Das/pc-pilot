@@ -508,7 +508,7 @@ function render() {
   // The bot restarted (maybe a new version): refresh the chat's command list, or / keeps offering the old one
   if (S.started && S.started !== b.started) getJSON("/api/chats").then((r) => { C.commands = r.commands || []; }).catch(() => {});
   S.started = b.started;
-  const working = busy.claude || busy.inflight.length || busy.local_locked;
+  const working = busy.claude.length || busy.inflight.length || busy.local_locked;
   const fe = b.frontends || [];
   $("dot").className = "dot " + (working ? "run" : fe.length && fe.every((f) => f.ok) ? "ok" : "err");
   $("sub").textContent = (working ? "working" : "idle") + " · up " + dur(st.now - b.started);
@@ -537,12 +537,12 @@ function renderNow() {
   if (p) $("power").textContent = `🔌 ${p.action} requested ${ago(p.at)}${p.who ? " by " + p.who : ""}. The bot posts in the chat when it's back.`;
   }
   // right now
-  const j = busy.claude;
-  if (changed("busy", [j, busy.inflight, busy.claude_waiting, busy.local_locked, j || busy.inflight.length ? Math.floor(st.now) : 0])) {
+  const jobs = busy.claude;
+  if (changed("busy", [jobs, busy.inflight, busy.claude_waiting, busy.local_locked, jobs.length || busy.inflight.length ? Math.floor(st.now) : 0])) {
   const kids = [];
-  $("busy-card").classList.toggle("live", !!(j || busy.inflight.length));
-  if (j) {
-    kids.push(h("div", {},
+  $("busy-card").classList.toggle("live", !!(jobs.length || busy.inflight.length));
+  for (const j of jobs) {
+    kids.push(h("div", { style: kids.length ? "margin-top:14px" : "" },
       h("div", { class: "row" }, h("span", {}, h("span", { class: "badge run" }, j.stopping ? "stopping" : j.status), " 🤖 Claude Code · ", j.model),
         h("span", { class: "muted small" }, dur(j.seconds))),
       h("div", { class: "small muted", style: "margin-top:4px" }, [j.who, j.where, j.perm, j.workspace, j.scheduled ? "scheduled" : null, j.context ? j.context + " ctx tokens" : null].filter(Boolean).join(" · ")),

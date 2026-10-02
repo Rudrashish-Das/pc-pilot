@@ -401,10 +401,11 @@ def machine() -> dict:
     return out
 
 
-def current_job() -> dict | None:
-    job = core._cc_current
-    if job is None:
-        return None
+def running_jobs() -> list[dict]:
+    return [job_info(job) for job in list(core._cc_running)]
+
+
+def job_info(job) -> dict:
     ch = getattr(job.channel, "id", None)
     return {"id": job.id, "task": core.clip(core.redact(job.task), 1500), "status": job.status,
             "backend": job.snap.backend, "model": job.snap.model, "perm": job.snap.perm, "workspace": job.snap.workspace,
@@ -461,7 +462,7 @@ async def state(request: web.Request) -> dict:
                 "storage": core.STORE.describe(), "claude": core.CLAUDE_VERSION, "frontends": frontends(),
                 "default_engine": core.DEFAULT_ENGINE, "local_model": core.LLM_MODEL,
                 "cc": {"enabled": core.CC_ENABLED, "backend": core.CC_BACKEND, "model": core.CC_MODEL}},
-        "busy": {"claude": current_job(), "claude_waiting": core._cc_waiting, "local_locked": core._llm_lock.locked(),
+        "busy": {"claude": running_jobs(), "claude_waiting": core._cc_waiting, "local_locked": core._llm_lock.locked(),
                  "inflight": [{**{k: v for k, v in a.items() if k not in ("channel_id", "user_id")},
                                **_names(a.get("channel_id"), a.get("user_id"))} for a in list(core._inflight.values())],
                  "whisper_loaded": core._whisper is not None,
@@ -624,9 +625,9 @@ async def chat_delete(request, fe, chat) -> dict:
 
 
 async def chat_get(request, fe, chat) -> dict:
-    job = current_job()
+    job = next((j for j in list(core._cc_running) if getattr(j.channel, "id", None) == chat.id), None)
     return {**chat.since(int(request.query.get("since") or 0)), "chat": chat.summary(), "typing": chat.typing > 0,
-            "job": job if job and job.get("channel") == str(chat.id) else None}
+            "job": job_info(job) if job else None}
 
 
 async def chat_send(request, fe, chat) -> dict:

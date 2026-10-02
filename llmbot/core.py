@@ -1697,8 +1697,7 @@ def touch_model(root: str, model: str) -> None:
 
 
 def models_busy() -> bool:
-    job = _cc_current
-    return _llm_lock.locked() or bool(job and job.snap.backend == "ollama")
+    return _llm_lock.locked() or any(job.snap.backend == "ollama" for job in _cc_running)
 
 
 async def refresh_loaded() -> None:
@@ -2308,9 +2307,10 @@ class CCJob:
         return "success"
 
 
-_cc_lock = asyncio.Lock()
+_cc_lock = asyncio.Lock()  # local-model jobs (ollama/custom) run one at a time; Anthropic ones run in parallel
+_cc_chan_locks: dict[int, asyncio.Lock] = {}  # one job at a time per chat, so its replies and session stay in order
 _cc_waiting = 0
-_cc_current: CCJob | None = None
+_cc_running: list[CCJob] = []
 _bg_tasks: set[asyncio.Task] = set()
 
 
@@ -2540,17 +2540,21 @@ async def _run_job(job: CCJob) -> None:
 
 
 async def _run_job_inner(job: CCJob) -> None:
-    global _cc_waiting, _cc_current
+    global _cc_waiting
     renderer = asyncio.create_task(_render_loop(job))
     try:
-        _cc_waiting += 1
-        try:
-            await _cc_lock.acquire()
-        finally:
-            _cc_waiting -= 1
-        try:
-            if not job.stop_requested:
-                _cc_current = job
+        async with contextlib.AsyncExitStack() as locks:
+            _cc_waiting += 1
+            try:
+                await locks.enter_async_context(_cc_chan_locks.setdefault(getattr(job.channel, "id", 0), asyncio.Lock()))
+                if job.snap.backend != "anthropic":
+                    await locks.enter_async_context(_cc_lock)
+            finally:
+                _cc_waiting -= 1
+            if job.stop_requested:
+                return
+            _cc_running.append(job)
+            try:
                 await _execute(job)
                 # --resume on a missing session fails before "init"; retry once as a new session.
                 if (job.snap.resume and not job.stop_requested and job.parser.model is None
@@ -2560,9 +2564,8 @@ async def _run_job_inner(job: CCJob) -> None:
                     job.lines.append("↩️ Previous session not found; starting a new one")
                     job.dirty = True
                     await _execute(job)
-        finally:
-            _cc_current = None
-            _cc_lock.release()
+            finally:
+                _cc_running.remove(job)
     except Exception as e:
         log.exception("Claude Code job failed")
         job.error = f"{type(e).__name__}: {e}"
@@ -3329,7 +3332,7 @@ def panel_embed(channel_id: int) -> discord.Embed:
     e.add_field(name="CC session", value=sess)
     cli = f"✅ {CLAUDE_VERSION}" if claude_bin() and CLAUDE_VERSION else ("✅ found" if claude_bin() else "❌ not found")
     e.add_field(name="CLI", value=cli if CC_ENABLED else f"{cli} · disabled (no OWNER_IDS)")
-    busy = "🔴 running" if _cc_current else "🟢 idle"
+    busy = f"🔴 {len(_cc_running)} running" if _cc_running else "🟢 idle"
     if _cc_waiting:
         busy += f" · {_cc_waiting} queued"
     e.add_field(name="CC status", value=busy)
@@ -4711,9 +4714,10 @@ async def core_stop() -> None:
         await sys.modules["llmbot.dashboard"].stop()
     if _telegram is not None:
         await _telegram.close()
-    if _cc_current and _cc_current.proc:
-        _cc_current.stop_requested = True
-        await kill_tree(_cc_current.proc)
+    for job in list(_cc_running):
+        if job.proc:
+            job.stop_requested = True
+            await kill_tree(job.proc)
     if scheduler.running:
         scheduler.shutdown(wait=False)
     if http:
