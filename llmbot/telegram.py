@@ -145,6 +145,39 @@ _INLINE = [
 ]
 
 
+_TABLE_SEP = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
+
+
+def _cells(ln: str) -> list[str]:
+    return [c.strip() for c in ln.strip().strip("|").split("|")]
+
+
+def untable(t: str) -> str:
+    """Markdown tables -> one block per row: the first cell as a bold heading, then "Header: value" lines.
+    Telegram has no tables, and the raw pipes wrap into an unreadable mess on a phone."""
+    lines, out, i = t.split("\n"), [], 0
+    while i < len(lines):
+        if "|" in lines[i] and i + 1 < len(lines) and _TABLE_SEP.match(lines[i + 1]):
+            heads, i = _cells(lines[i]), i + 2
+            rows = []
+            while i < len(lines) and "|" in lines[i] and lines[i].strip():
+                rows.append(_cells(lines[i]))
+                i += 1
+            for n, row in enumerate(rows):
+                first = re.sub(r"^\*\*(.+)\*\*$", r"\1", row[0]) if row else ""
+                block = [f"**{first}**"] if first else []
+                for h, v in zip(heads[1:], row[1:]):
+                    if v:
+                        block.append(f"{h}: {v}" if h else v)
+                if n:
+                    out.append("")
+                out.extend(block)
+            continue
+        out.append(lines[i])
+        i += 1
+    return "\n".join(out)
+
+
 def render(text: str, *, as_html: bool, tz, mention, where) -> str:
     """Discord-flavoured text -> Telegram HTML (as_html) or clean plain text (fallback when HTML is rejected)."""
     keep: list[str] = []
@@ -171,6 +204,7 @@ def render(text: str, *, as_html: bool, tz, mention, where) -> str:
                lambda m: hold(f'<a href="{html.escape(m.group(2), quote=True)}">{_esc(m.group(1))}</a>',
                               f"{m.group(1)} ({m.group(2)})"), t)
     t = re.sub(r"<(https?://[^\s>]+)>", lambda m: hold(_esc(m.group(1)), m.group(1)), t)
+    t = untable(t)
     if as_html:
         t = _esc(t)
     out: list[str] = []
