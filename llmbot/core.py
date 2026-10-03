@@ -2090,6 +2090,32 @@ async def _mcp_web_server() -> None:
     await http.aclose()
 
 
+_background: bool | None = None
+
+
+def in_background_session() -> bool:
+    """Started at boot (bot_control.ps1 boot) and nobody signed in yet: Windows session 0, an S4U logon with no
+    DPAPI keys. A Chrome started from here can't decrypt the profile's cookies and signs the user out of every site,
+    so jobs get no browser until the sign-in handoff (logon_handoff_watch). Fixed for the life of the process."""
+    global _background
+    if _background is None:
+        _background = False
+        if sys.platform == "win32":
+            import ctypes
+
+            sid = ctypes.c_ulong()
+            if ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(sid)):
+                _background = sid.value == 0
+    return _background
+
+
+NO_BROWSER_ARGS = ["--no-chrome", "--disallowedTools", "mcp__claude-in-chrome", "mcp__computer-use"]
+NO_BROWSER_NOTE = ("[Browser: not available. The PC restarted and nobody has signed in yet; Chrome started now would "
+                   "sign the user out of every site. Don't open Chrome or any browser (no Claude in Chrome, computer "
+                   "use, or start/chrome.exe commands); use WebSearch/WebFetch, or say the task needs the user to sign "
+                   "in to the PC first.]")
+
+
 def build_cc_command(binary: str, snap: CCSnap) -> list[str]:
     cmd = [binary, "-p", "--output-format", "stream-json", "--verbose", "--model", snap.model]
     if not CC_EXTRAS:
@@ -2109,6 +2135,8 @@ def build_cc_command(binary: str, snap: CCSnap) -> list[str]:
         cmd += ["--resume", snap.resume] + (["--fork-session"] if snap.fork else [])
     if snap.perm != "full":
         cmd += SANDBOX_ARGS
+    if in_background_session():
+        cmd += NO_BROWSER_ARGS
     return cmd + perm_args(snap)  # --allowedTools is variadic, keep it last
 
 
@@ -2411,6 +2439,8 @@ def cc_prompt(job: CCJob) -> str:
     """What Claude Code receives. Claude otherwise assumes UTC (5h30 behind IST), so "8am today" at 02:30 IST became
     tomorrow. The time goes in the message, not the system prompt, so the cached prefix stays the same."""
     head = f"[Now: {now_local():%A %d %B %Y, %H:%M} {TIMEZONE}]\n[Access: {ACCESS_NOTES[job.snap.perm]}]"
+    if in_background_session():
+        head += "\n" + NO_BROWSER_NOTE
     if job.snap.compact:
         return job.task
     name = job.task.strip()[1:].split(None, 1)[0] if job.task.strip().startswith("/") and job.task.strip()[1:] else ""

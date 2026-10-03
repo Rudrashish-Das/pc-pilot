@@ -171,7 +171,16 @@ switch ($Action) {
         # The bot's Claude Code runs are `claude -p --output-format stream-json`. A restart scheduled from inside one
         # waits for it (and any job started after it) to finish and its reply to be posted, so no answer is cut off.
         $deadline = (Get-Date).AddMinutes(30)
-        $jobs = { @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*stream-json*" -and $_.Name -notlike "powershell*" }) }
+        # Only the bot's own (its descendants): the Claude desktop app's sessions are stream-json runs too
+        $jobs = {
+            $all = @{}; Get-CimInstance Win32_Process | ForEach-Object { $all[[int]$_.ProcessId] = $_ }
+            $bot = @(Get-BotProcess | ForEach-Object { [int]$_.ProcessId })
+            @($all.Values | Where-Object { $_.CommandLine -like "*stream-json*" -and $_.Name -notlike "powershell*" } | Where-Object {
+                $p = $_; $hops = 0
+                while ($p -and $hops -lt 6) { if ($bot -contains [int]$p.ParentProcessId) { return $true }; $p = $all[[int]$p.ParentProcessId]; $hops++ }
+                $false
+            })
+        }
         do {
             while ((& $jobs).Count -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 5 }
             Start-Sleep -Seconds 15  # time to post the reply; a message sent meanwhile starts a new job
