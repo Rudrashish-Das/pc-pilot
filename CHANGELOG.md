@@ -3,6 +3,7 @@
 Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `bot_v22.py`). From 0.23.0 on, git history is the record.
 
 ## Unreleased
+- Fixed: with `bot_control.ps1 boot`, Claude Code using Chrome signed you out of Google and every other site. The boot copy runs in session 0 under an S4U logon, which has no password and so no DPAPI keys: Chrome started from there can't decrypt the profile's cookies. It also stayed in session 0 after sign-in, because the Startup apps launcher saw it running and did nothing. Now the launcher asks it to hand over at sign-in. It exits once no job is running, and the launcher starts the bot again in your desktop session. Run `bot_control.ps1 install` once to rebuild the launcher.
 - Fixed: a failed lookup of Claude Code's skills (CLI missing, timeout) made every `/skills` or `/skill` typo start another one (up to 60 s each), and an error starting the CLI left Discord's `/skills` "thinking" forever. Failures are now caught and not retried for 5 minutes.
 - Fixed: a message starting with a path (`/etc/hosts what is this?`) was sent to Claude Code as a slash command, without the time and access lines. Skill names now match regardless of case (`/skill mytool` finds `MyTool`).
 - Fixed: `[[skill:]]`, `[[attach:]]` and `[[delete:]]` shown as examples inside a ``` code block were acted on (saving a skill or deleting a file); only markers outside code blocks count now.

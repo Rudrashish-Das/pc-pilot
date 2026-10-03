@@ -21,19 +21,47 @@ static class Launcher {
                             MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }
-        // Already running (e.g. started at boot by bot_control.ps1 boot): the bot holds this port (INSTANCE_PORT)
-        try {
-            var probe = new TcpListener(IPAddress.Loopback, 47823);
-            probe.ExclusiveAddressUse = true;
-            probe.Start();
-            probe.Stop();
-        } catch (SocketException) {
-            return 0;
+        // Already running: the bot holds this port (INSTANCE_PORT). A copy started at boot (bot_control.ps1 boot)
+        // runs in session 0 without the user's DPAPI keys, so Claude Code jobs from it sign Chrome out of everything.
+        // Ask it to hand over (it exits once no job is running: llmbot/core.py logon_handoff_watch) and wait.
+        if (!PortFree()) {
+            if (Process.GetCurrentProcess().SessionId == 0 || !BootCopyRunning()) return 0;
+            string handoff = Path.Combine(root, @"bin\logon-handoff");
+            try {
+                File.WriteAllText(handoff, Process.GetCurrentProcess().Id.ToString());
+                var deadline = System.DateTime.Now.AddHours(6);
+                while (!PortFree()) {
+                    if (System.DateTime.Now > deadline) return 0;
+                    System.Threading.Thread.Sleep(2000);
+                }
+                System.Threading.Thread.Sleep(1000);  // the old copy finishing its exit
+            } finally {
+                try { File.Delete(handoff); } catch (IOException) {}
+            }
         }
         var psi = new ProcessStartInfo(pythonw, "-m llmbot");
         psi.WorkingDirectory = root;
         psi.UseShellExecute = false;
         Process.Start(psi);
         return 0;
+    }
+
+    static bool PortFree() {
+        try {
+            var probe = new TcpListener(IPAddress.Loopback, 47823);
+            probe.ExclusiveAddressUse = true;
+            probe.Start();
+            probe.Stop();
+            return true;
+        } catch (SocketException) {
+            return false;
+        }
+    }
+
+    static bool BootCopyRunning() {
+        foreach (var name in new[] { "pythonw", "python" })
+            foreach (var p in Process.GetProcessesByName(name))
+                try { if (p.SessionId == 0) return true; } catch (System.Exception) {}
+        return false;
     }
 }

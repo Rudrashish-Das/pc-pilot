@@ -4681,6 +4681,8 @@ async def core_start() -> None:
     _spawn(idle_unloader())
     _spawn(power_watch())
     _spawn(power_back_on_start())
+    if sys.platform == "win32" and "--boot" in sys.argv:
+        _spawn(logon_handoff_watch())
     binary = claude_bin()
     if binary:
         try:
@@ -5189,6 +5191,55 @@ async def power_watch() -> None:
             STORE.delete("power", POWER_FILE)
             await _post_power_notice(rec, f"⚠️ The PC didn't {POWER_ACTIONS[rec['action']][1].lower()} "
                                           "(cancelled on the PC, or Windows refused). It's still on.", tries=3)
+
+
+HANDOFF_FILE = BASE_DIR / "bin" / "logon-handoff"  # scripts/launcher.cs writes it (its PID) at sign-in
+
+
+def _pid_alive(pid: int) -> bool:
+    import ctypes
+
+    k32 = ctypes.windll.kernel32
+    h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return k32.GetLastError() == 5  # access denied: it exists
+    try:
+        code = ctypes.c_ulong()
+        return bool(k32.GetExitCodeProcess(h, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+    finally:
+        k32.CloseHandle(h)
+
+
+async def logon_handoff_watch() -> None:
+    """Started at boot (bot_control.ps1 boot), the bot runs in session 0 under an S4U logon: no password, so no
+    DPAPI keys. Claude Code jobs started from there can't decrypt Chrome's cookies and sign the user out of
+    everything. Once the user signs in, the Startup apps launcher asks for the desktop session to take over: exit
+    as soon as no job is running or queued, and the launcher (still waiting) starts the bot again as the user."""
+    idle_checks = 0
+    while True:
+        await asyncio.sleep(10)
+        try:
+            pid = int(HANDOFF_FILE.read_text().strip())
+        except (OSError, ValueError):
+            idle_checks = 0
+            continue
+        if not _pid_alive(pid):  # the launcher is gone (signed out): nobody would start us again
+            continue
+        busy = _cc_running or _cc_waiting or _llm_lock.locked()
+        idle_checks = 0 if busy else idle_checks + 1
+        if idle_checks < 2:  # idle for 10+ s: time for a finished job's reply to be posted
+            continue
+        log.info("Signed in: handing over to a copy in the desktop session (Chrome and other per-user secrets work there)")
+        note_event("bot", "Handing over to the desktop session after sign-in")
+        try:
+            if DISCORD_TOKEN and not bot.is_closed():
+                await asyncio.wait_for(bot.close(), 20)  # LLMBot.close -> core_stop
+            else:
+                await asyncio.wait_for(core_stop(), 20)
+        except Exception as e:
+            log.warning("Stopping for the handoff: %s", oneline(redact(e), 200))
+        logging.shutdown()
+        os._exit(0)
 
 
 def power_embed(note: str | None = None) -> discord.Embed:
