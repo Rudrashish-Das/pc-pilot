@@ -43,6 +43,7 @@ from dotenv import load_dotenv
 from llmbot import __version__
 from llmbot import hints as hints_mod
 from llmbot import logs as logs_mod
+from llmbot import pcstatus
 from llmbot import skills as skills_mod
 from llmbot import store as store_mod
 
@@ -79,6 +80,11 @@ OWNER_IDS = _ids("OWNER_IDS") or set(ALLOWED_USER_IDS)  # fallback; empty => Cla
 TELEGRAM_BOT_TOKEN = _env("TELEGRAM_BOT_TOKEN")
 TELEGRAM_ALLOWED_USER_IDS = _ids("TELEGRAM_ALLOWED_USER_IDS")
 TELEGRAM_OWNER_IDS = _ids("TELEGRAM_OWNER_IDS") or set(TELEGRAM_ALLOWED_USER_IDS)
+# People who may only check on the PC: /status (the game being played and for how long, how long the PC has been
+# on) and /ping (a message that pops up on the PC's screen and is answered from there). Discord or Telegram ids; the
+# bot does nothing else for them, even if they're listed above. Owners can use both commands too.
+GUEST_IDS = _ids("GUEST_IDS")
+GUEST_COMMANDS = ("status", "ping")
 
 
 def is_telegram_id(x: int) -> bool:
@@ -525,6 +531,8 @@ def no_ask_text(until: float) -> str:
 
 
 def is_allowed(user_id: int) -> bool:
+    if user_id in GUEST_IDS:  # /status and /ping only (can_check_pc)
+        return False
     if is_telegram_id(user_id):  # Telegram: only listed users, never "everyone"
         return user_id in TELEGRAM_ALLOWED_USER_IDS or user_id in TELEGRAM_OWNER_IDS
     if is_web_id(user_id):  # the dashboard's chat: whoever has its access key
@@ -533,6 +541,8 @@ def is_allowed(user_id: int) -> bool:
 
 
 def is_owner(user_id: int) -> bool:
+    if user_id in GUEST_IDS:  # even if also listed as an owner by mistake: guests get /status and /ping only
+        return False
     if is_web_id(user_id):
         return user_id == WEB_USER_ID and DASHBOARD_CHAT == "owner"
     return user_id in (TELEGRAM_OWNER_IDS if is_telegram_id(user_id) else OWNER_IDS)
@@ -548,6 +558,11 @@ def is_allowed_in(user_id: int, guild: Any) -> bool:
 
 
 CC_ENABLED = bool(OWNER_IDS or TELEGRAM_OWNER_IDS)
+
+
+def can_check_pc(user_id: int) -> bool:
+    """Who may use /status and /ping: GUEST_IDS and owners."""
+    return user_id in GUEST_IDS or (is_allowed(user_id) and is_owner(user_id))
 
 
 # =============================================================================
@@ -4603,10 +4618,14 @@ def compact_snap(snap: CCSnap, session_id: str) -> CCSnap:
 
 class Tree(app_commands.CommandTree):
     async def interaction_check(self, inter: discord.Interaction) -> bool:
+        command = inter.type == discord.InteractionType.application_command
+        if command and (inter.data or {}).get("name") in GUEST_COMMANDS and can_check_pc(inter.user.id):
+            return True
         if is_allowed_in(inter.user.id, inter.guild):
             return True
-        if inter.type == discord.InteractionType.application_command:
-            await inter.response.send_message("⛔ You're not allowed to use this bot.", ephemeral=True)
+        if command:
+            await inter.response.send_message("⛔ For you, only /status and /ping work." if inter.user.id in GUEST_IDS
+                                              else "⛔ You're not allowed to use this bot.", ephemeral=True)
         return False
 
     async def on_error(self, inter: discord.Interaction, error: app_commands.AppCommandError) -> None:
@@ -4727,6 +4746,10 @@ class LLMBot(discord.Client):
             mode = get_settings(message.channel.id)["voice"]
             addressed = message.guild is None or mode == "all"
         if not addressed:
+            return
+        if message.author.id in GUEST_IDS:
+            await message.reply("I only do `/status` (a game? how long has the laptop been on?) and `/ping <message>` "
+                                "for you.", mention_author=False)
             return
         if not is_allowed_in(message.author.id, message.guild):
             log.info("Ignored message from user %s (not in ALLOWED_USER_IDS, or a DM with no allow-list)",
@@ -5492,6 +5515,134 @@ async def power_cmd(inter: discord.Interaction):
         await inter.response.send_message("Power controls only work when the bot runs on Windows.", ephemeral=True)
         return
     await inter.response.send_message(embed=power_embed(), view=PowerView(inter.channel_id), ephemeral=True)
+
+
+# =============================================================================
+# /status and /ping: for GUEST_IDS (and owners), who can't use anything else
+# =============================================================================
+PING_MAX_CHARS = 1000
+# Spam guard for guests (owners aren't limited): at most PING_LIMIT pings per PING_WINDOW seconds, PING_GAP apart
+PING_LIMIT = max(int(_env("PING_LIMIT", "5") or 5), 1)
+PING_WINDOW = 600
+PING_GAP = 15
+_ping_times: dict[int, list[float]] = {}
+
+
+def ping_wait(user_id: int) -> float:
+    """Seconds until this user may ping again (0 = now). Owners: always 0."""
+    if is_owner(user_id):
+        return 0
+    now = time.monotonic()
+    recent = _ping_times[user_id] = [t for t in _ping_times.get(user_id, []) if now - t < PING_WINDOW]
+    waits = []
+    if recent:
+        waits.append(recent[-1] + PING_GAP - now)
+    if len(recent) >= PING_LIMIT:
+        waits.append(recent[-PING_LIMIT] + PING_WINDOW - now)
+    return max([0, *waits])
+
+
+def _span(seconds: float) -> str:
+    m = int(max(seconds, 0)) // 60
+    if m < 60:
+        return f"{m} min"
+    h, m = divmod(m, 60)
+    return f"{h}h {m:02d}m" if h < 24 else f"{h // 24}d {h % 24}h"
+
+
+def _clock(ts: float) -> str:
+    at = datetime.fromtimestamp(ts, TZ)
+    day = at.date()
+    today = datetime.now(TZ).date()
+    return at.strftime("%H:%M") + ("" if day == today else " yesterday" if (today - day).days == 1
+                                   else at.strftime(", %d %b"))
+
+
+async def pc_status_text() -> str:
+    games, since, screen = await asyncio.gather(asyncio.to_thread(pcstatus.running_games),
+                                                asyncio.to_thread(pcstatus.on_since),
+                                                asyncio.to_thread(pcstatus.desktop))
+    now = time.time()
+    lines = [f"🎮 Playing **{name}** for {_span(now - at)} (since {_clock(at)})" for name, at in games] or [
+        "🎮 Not playing a game right now"]
+    lines.append(f"💻 Laptop on for {_span(now - since)} (since {_clock(since)})" if since else
+                 "💻 Couldn't tell how long the laptop has been on")
+    if screen == "locked":
+        lines.append("🔒 The screen is locked")
+    elif screen == "away":
+        lines.append("💤 Nobody is signed in on the laptop")
+    return "\n".join(lines)
+
+
+async def ping_pc(deliver: Any, user_id: int, sender: str, message: str) -> str:
+    """Pop the message up on the PC's screen; its reply is posted to `deliver` (a channel) later. Returns what to
+    tell the sender now."""
+    message = clip(message.strip(), PING_MAX_CHARS)
+    if not message:
+        return "Usage: /ping <message>"
+    wait = ping_wait(user_id)
+    if wait > 0:
+        log.info("Ping from %s refused: spam guard (%.0fs to wait)", user_id, wait)
+        return (f"⏳ Too many pings: up to {PING_LIMIT} every {PING_WINDOW // 60} minutes, at least {PING_GAP}s apart. "
+                f"Try again in {_span(wait) if wait >= 60 else f'{wait:.0f}s'}.")
+    screen = await asyncio.to_thread(pcstatus.desktop)
+    if screen == "away":
+        return "💤 Nobody is signed in on the laptop right now, so the ping can't pop up there. Try again later."
+    added = pcstatus.WINDOW.is_open()
+    _ping_times.setdefault(user_id, []).append(time.monotonic())
+    note_event("ping", f"Ping from {sender}: {clip(message, 200)}", user_id=user_id,
+               channel_id=getattr(deliver, "id", None))
+    source = "telegram" if is_telegram_id(user_id) else "dashboard" if is_web_id(user_id) else "discord"
+    _spawn(_ping_dialog(deliver, sender, message, source))
+    where = "added to the window already on the laptop's screen" if added else "it's on the laptop's screen"
+    return (f"📨 Sent: {where}" + (" (locked right now, so it shows once it's unlocked)" if screen == "locked" else "")
+            + ". The reply comes here.")
+
+
+async def _ping_dialog(deliver: Any, sender: str, message: str, source: str) -> None:
+    try:
+        reply = await pcstatus.show_ping(getattr(deliver, "id", id(deliver)), sender, message, source)
+        if reply is None:  # a later ping from the same chat got the answer
+            return
+    except Exception as e:
+        log.error("Ping window failed: %s", oneline(redact(e), 300))
+        reply = None
+    quote = f"“{clip(oneline(message), 60)}”"
+    if reply is None:
+        text = f"⚠️ Your ping {quote} couldn't be shown on the laptop."
+    elif reply:
+        text = f"💬 Reply to {quote}:\n{clip(reply, 1800)}"
+    else:
+        text = f"👀 Your ping {quote} was seen (closed without a reply)."
+    note_event("ping", "Ping answered" if reply else "Ping closed" if reply == "" else "Ping not shown",
+               channel_id=getattr(deliver, "id", None))
+    try:
+        await deliver.send(text)
+    except Exception as e:
+        log.warning("Ping reply not delivered: %s", oneline(redact(e), 200))
+
+
+@bot.tree.command(name="status", description="Playing a game? For how long? How long has the laptop been on?")
+async def status_cmd(inter: discord.Interaction):
+    if not can_check_pc(inter.user.id):
+        await inter.response.send_message("⛔ Not available to you.", ephemeral=True)
+        return
+    await inter.response.defer(ephemeral=True, thinking=True)
+    await inter.followup.send(await pc_status_text(), ephemeral=True)
+
+
+@bot.tree.command(name="ping", description="Pop a message up on the laptop's screen; the reply comes to your DMs")
+@app_commands.describe(message="What to say")
+async def ping_cmd(inter: discord.Interaction, message: str):
+    if not can_check_pc(inter.user.id):
+        await inter.response.send_message("⛔ Not available to you.", ephemeral=True)
+        return
+    await inter.response.defer(ephemeral=True, thinking=True)
+    try:
+        deliver = inter.channel if inter.guild is None else await inter.user.create_dm()
+    except discord.HTTPException:
+        deliver = inter.channel
+    await inter.followup.send(await ping_pc(deliver, inter.user.id, inter.user.display_name, message), ephemeral=True)
 
 
 # =============================================================================

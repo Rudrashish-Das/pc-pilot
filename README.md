@@ -44,6 +44,7 @@ One bot process, two front ends. Both share one backend: engines, Claude Code se
 - **Storage:** JSON files in `data/` with no setup, or a Postgres database if you set `DATABASE_URL`. Either way it holds settings, tasks, reminders, spend, the local model's chat memory and a history of every Claude Code job with its cost.
 - **Web dashboard** for your phone: what the bot is doing right now (live Claude Code progress, local replies, voice notes), a searchable history of everything it did, Claude Code jobs with their cost, today's spend against the cap, upcoming reminders and scheduled prompts, models in GPU memory, the PC's RAM/GPU/battery, and the log. Served by the bot itself on your local network, behind an access key. `/dashboard` gives owners the link. Its **Chat** tab talks to the bot over the same Wi-Fi, so the local model still answers when the internet is down.
 - **PC power from chat** (`/power`, owners only): lock, sleep, hibernate, restart or shut down, with a confirmation step. The bot posts in the chat when it's back up.
+- **Guests** (`GUEST_IDS`): someone who can only check on the PC. `/status` says whether a game is being played and for how long, and how long the PC has been on. `/ping <message>` pops up on the PC's screen, on top of everything, with a sound; the reply typed there goes back to them. Nothing else works for them.
 
 ## Security model
 
@@ -255,6 +256,8 @@ Your settings, tasks, reminders and logs are in `data/` (or your Postgres databa
 | List and cancel them, or choose the model a task runs on and what it may do | `/tasks` | `/tasks` |
 | Free the GPU | `/unload` | `/unload` |
 | Lock / sleep / hibernate / restart / shut down the PC (owners) | `/power` | `/power` |
+| Game being played, PC on-time (owners, `GUEST_IDS`) | `/status` | `/status` |
+| Pop a message up on the PC's screen, get the reply (owners, `GUEST_IDS`) | `/ping` | `/ping <message>` |
 | Web dashboard link (owners) | `/dashboard` | `/dashboard` (private chat) |
 
 Voice notes, images and files work on both. See [docs/SETUP.md](docs/SETUP.md) for how each feature behaves and what it costs.

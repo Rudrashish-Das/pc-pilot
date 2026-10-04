@@ -71,9 +71,18 @@ COMMANDS = [
     ("log", "Full log of the last Claude Code reply"),
     ("unload", "Free GPU memory now"),
     ("power", "Lock, sleep, restart or shut down the PC"),
+    ("status", "Playing a game? How long has the PC been on?"),
+    ("ping", "ping <message>: pops up on the PC's screen"),
     ("dashboard", "Link to the web dashboard (owners, private chat)"),
     ("help", "How to use this bot"),
 ]
+# All that GUEST_IDS see (and can use)
+GUEST_MENU = [
+    ("status", "Playing a game? For how long? How long has the laptop been on?"),
+    ("ping", "ping <message>: pops up on the laptop's screen; the reply comes here"),
+]
+GUEST_HELP = ("/status: is a game being played, for how long, and how long the laptop has been on\n"
+              "/ping <message>: pops up on the laptop's screen, on top of everything; the reply comes here")
 
 
 class TgError(discord.HTTPException):
@@ -435,6 +444,7 @@ class Telegram:
         self._views: OrderedDict[str, _ViewEntry] = OrderedDict()
         self._pending: dict[tuple[int, int], tuple] = {}  # (chat, user) -> (modal, text input, message, deadline)
         self._names: dict[int, str] = {}
+        self._guest_menus: set[int] = set()  # GUEST_IDS whose command menu shows only /status and /ping
         self._chats: dict[int, str] = {}
         self._topics: dict[int, dict] = {}  # topic channel id -> {"chat", "thread", "name"}
         self._topic_ids: dict[tuple[int, int], int] = {}
@@ -813,6 +823,9 @@ class Telegram:
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 300)
         log.info("Telegram: logged in as @%s", self.username)
+        for gid in self.core.GUEST_IDS:
+            if self.core.is_telegram_id(gid):
+                await self._guest_menu(gid)
         self.core.note_event("bot", f"Telegram connected as @{self.username}")
         offset = None
         while not self._closed:
@@ -887,6 +900,9 @@ class Telegram:
             if cm.group(2) and cm.group(2).lower() != self.username.lower():
                 return  # a command for another bot in the group
             cmd, args = cm.group(1).lower(), (cm.group(3) or "").strip()
+        if uid in core.GUEST_IDS:
+            await self._guest(m, cmd, args, user, chat, thread, topic_name)
+            return
         if not core.is_allowed(uid):
             if cmd == "start" and private and not (core.TELEGRAM_ALLOWED_USER_IDS or core.TELEGRAM_OWNER_IDS):
                 # Setup: nobody is allowed yet, so tell the person their id (nothing else is revealed or done).
@@ -953,6 +969,45 @@ class Telegram:
             return
         async with chan.typing():
             await core.handle_prompt(chan, uid, prompt, core.Out(chan, reply_to=me, prefix=prefix), attachments=atts)
+
+    async def _guest_menu(self, uid: int) -> bool:
+        """Show a guest only /status and /ping in their chat's command menu (their private chat's id is theirs).
+        Telegram refuses until they've started a chat with the bot; the first message they send retries it."""
+        try:
+            await self.api("setMyCommands", commands=[{"command": c, "description": d} for c, d in GUEST_MENU],
+                           scope={"type": "chat", "chat_id": uid})
+        except TgError as e:
+            log.info("Telegram: guest %s's command menu not set yet (%s)", uid, e)
+            return False
+        self._guest_menus.add(uid)
+        return True
+
+    async def _guest(self, m: dict, cmd: str | None, args: str, user: dict, chat: dict, thread: int | None,
+                     topic_name: str | None) -> None:
+        """GUEST_IDS: /status and /ping, nothing else."""
+        if time.time() - m.get("date", 0) > STALE_AFTER.total_seconds():
+            return
+        cid = self.cid(chat["id"], thread, topic_name)
+        self._seen(user, chat, cid)
+        if user["id"] not in self._guest_menus and chat.get("type") == "private":
+            await self._guest_menu(user["id"])
+        chan = TgChannel(self, cid)
+        out = self.core.Out(chan, reply_to=TgMessage(self, cid, m["message_id"], m.get("text") or ""))
+        if cmd in self.core.GUEST_COMMANDS:
+            await self._pc_command(cmd, args, chan, out, user)
+        else:
+            await out(content=GUEST_HELP)
+
+    async def _pc_command(self, cmd: str, args: str, chan: TgChannel, out, user: dict) -> None:
+        core = self.core
+        if cmd == "status":
+            async with chan.typing():
+                await out(content=await core.pc_status_text())
+        elif not args:
+            await out(content="Usage: /ping <message>")
+        else:
+            name = user.get("first_name") or user.get("username") or str(user["id"])
+            await out(content=await core.ping_pc(chan, user["id"], name, args))
 
     def _attachments(self, m: dict) -> tuple[list[TgAttachment], list[str]]:
         found = []
@@ -1116,6 +1171,11 @@ class Telegram:
             from llmbot import dashboard
 
             await out(content=dashboard.link_text(angle=False))
+        elif cmd in core.GUEST_COMMANDS:
+            if not core.can_check_pc(uid):
+                await out(content="⛔ Only owners and GUEST_IDS can use /status and /ping.")
+                return
+            await self._pc_command(cmd, args, chan, out, user)
         elif cmd == "cancel":
             await out(content="Nothing to cancel.")
         else:
@@ -1174,6 +1234,8 @@ class Telegram:
             "/skills: Claude Code's skills, and what it learned from earlier tasks · /skills show|forget <name>",
             "/topic <name>: a new topic = a separate conversation with its own session and settings",
             "/power (owners): lock, sleep, hibernate, restart or shut down the PC; I post here when I'm back",
+            "/status (owners): a game being played and for how long, how long the PC has been on · /ping <message>: "
+            "pops up on the PC's screen (GUEST_IDS can use only these two)",
             "/dashboard (owners): web page with what I'm doing now and what I've done, for your phone on the same Wi-Fi",
             "📎 Photos and files: attach them to your message (Claude Code sees images and PDFs).",
             *(["🎙️ Voice notes: transcribed on the PC and answered like a typed message."] if core.VOICE_ENABLED else []),

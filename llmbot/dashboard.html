@@ -406,7 +406,7 @@ const kv = (pairs) => h("div", { class: "kv" }, pairs.filter(Boolean).flatMap(([
 // ---- event kinds
 const KINDS = {
   local: { label: "Local", icon: "💻" }, claude: { label: "Claude Code", icon: "🤖" }, reminder: { label: "Reminder", icon: "⏰" },
-  task: { label: "Task", icon: "🗓️" }, power: { label: "Power", icon: "🔌" }, model: { label: "Model", icon: "🧠" },
+  task: { label: "Task", icon: "🗓️" }, power: { label: "Power", icon: "🔌" }, ping: { label: "Ping", icon: "📨" }, model: { label: "Model", icon: "🧠" },
   voice: { label: "Voice", icon: "🎙️" }, bot: { label: "Bot", icon: "🟢" }, warning: { label: "Warning", icon: "⚠️" },
   error: { label: "Error", icon: "⛔" },
 };
@@ -416,7 +416,7 @@ const FILTERS = [
   ["claude", "Claude Code", (e) => e.kind === "claude"],
   ["local", "Local model", (e) => e.kind === "local"],
   ["reminders", "Reminders & tasks", (e) => e.kind === "reminder" || e.kind === "task"],
-  ["system", "System", (e) => ["bot", "model", "power", "voice"].includes(e.kind)],
+  ["system", "System", (e) => ["bot", "model", "power", "voice", "ping"].includes(e.kind)],
   ["problems", "Problems", (e) => e.level === "error" || e.level === "warning"],
 ];
 
