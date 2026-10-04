@@ -449,12 +449,14 @@ async def state(request: web.Request) -> dict:
     events = [e for e in core._events if e["id"] > since][-200:]
     pending = core.power_pending()
     # ?lite=1: the page isn't showing the Now tab, so skip what only it shows (nvidia-smi, Ollama's model lists).
-    heavy = {} if request.query.get("lite") else {
-        "models": await cached("models", 4, ollama_models),
-        "ollama_up": await cached("ollama_up", 10, ollama_up),
-        "installed": await cached("installed", 30, installed_models),
-        "machine": {**machine(), "cpu": await cached("cpu", 2, cpu), "gpu": await cached("gpu", 2, gpu)},
-    }
+    # Fetched together: with Ollama down each probe waits for its timeout (~2 s per refused connect on Windows).
+    heavy = {}
+    if not request.query.get("lite"):
+        models, up, installed, cpu_, gpu_ = await asyncio.gather(
+            cached("models", 4, ollama_models), cached("ollama_up", 10, ollama_up),
+            cached("installed", 30, installed_models), cached("cpu", 2, cpu), cached("gpu", 2, gpu))
+        heavy = {"models": models, "ollama_up": up, "installed": installed,
+                 "machine": {**machine(), "cpu": cpu_, "gpu": gpu_}}
     return {
         **heavy,
         "now": time.time(), "timezone": core.TIMEZONE,

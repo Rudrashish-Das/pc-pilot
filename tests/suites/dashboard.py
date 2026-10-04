@@ -108,7 +108,8 @@ async def main():
     await site.start()
     port = site._server.sockets[0].getsockname()[1]
     base = f"http://127.0.0.1:{port}"
-    async with httpx.AsyncClient(base_url=base, follow_redirects=False) as c:
+    # 30 s: on CI nothing listens for Ollama, and Windows takes ~2 s to refuse each connect
+    async with httpx.AsyncClient(base_url=base, follow_redirects=False, timeout=30) as c:
         r0 = await c.get("/")
         check(r0.status_code == 401 and "Access key" in r0.text, "no key: login page")
         check((await c.get("/api/state")).status_code == 401, "no key: API refused")
