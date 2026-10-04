@@ -212,7 +212,7 @@ Startup apps only run once someone signs in. So after `/power` → Restart, the 
 .\scripts\bot_control.ps1 boot
 ```
 
-This registers a scheduled task that starts the bot as you, before anyone signs in. Windows doesn't store your password for it. If Ollama isn't running then (its own app also waits for sign-in), the bot starts `ollama serve` itself. Keep the Startup apps entry as well: at sign-in it sees the bot already running and does nothing. `unboot` removes the task.
+This registers a scheduled task that starts the bot as you, before anyone signs in. It asks for your Windows password (for a Microsoft account, the account password, not your PIN), which Windows stores encrypted for that task; run `boot` again after changing your password. Without a stored password ("S4U" tasks), Windows' per-user encryption breaks: Chrome can't read its cookies and signs you out of every site after each restart. If Ollama isn't running then (its own app also waits for sign-in), the bot starts `ollama serve` itself. Keep the Startup apps entry as well: at sign-in it sees the bot already running and does nothing. `unboot` removes the task.
 
 `install` builds a small launcher, `bin\pc-pilot.exe`, using the C# compiler that comes with Windows. Task Manager names each startup entry after the program it runs, so the launcher is what makes the entry show as **pc-pilot** with the logo. Without it, the entry would show as "Python". Run `install` again if you move the folder.
 
