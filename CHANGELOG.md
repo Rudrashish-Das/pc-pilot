@@ -3,6 +3,10 @@
 Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `bot_v22.py`). From 0.23.0 on, git history is the record.
 
 ## Unreleased
+- Fixed: scheduled tasks and reminders in a deleted Discord thread, Telegram topic or dashboard chat. Before, a Telegram topic's task still ran every time (Claude Code spend included) and its reply was lost; a Discord thread's task silently never ran; a dashboard chat came back as "Reminders". Now:
+  - They post in the chat the thread or topic belonged to, with a note saying why, and a repeating task moves there for good. A Discord channel with no parent gets a DM instead, as reminders already did.
+  - Telegram sends bots no notice when a topic is deleted, so before a task or reminder runs for a topic, the bot checks it still exists: a reply to a message that doesn't exist, which always fails, so nothing is posted, and whose error says whether the topic is still there. (A typing indicator or an unchanged topic edit succeed even for deleted topics: tested against the real API.) Nothing is run for a reply nobody would get. A reply that finishes after its topic was deleted goes to the group with a note instead of being lost, and so does anything sent there later.
+  - Deleting a dashboard chat that has tasks or reminders asks first: cancel them, or keep them in a chat named "Scheduled".
 - Fixed: reminders and one-shot scheduled prompts that came due while the bot was off (or the PC asleep) could be lost: they fired 10 s after start, before Discord had logged in, found no channel and were dropped. They now wait (up to 15 minutes, still saved) for Discord or Telegram to connect.
 - Fixed: a scheduled Claude Code run replaced the chat's own session with its fresh one, so your next message continued the scheduled run instead of your conversation.
 - Fixed: cron weekday ranges starting at 0 (`0 9 * * 0-6`, `0-3`) were rejected, and steps counted from Monday (`*/2` ran Mon/Wed/Fri/Sun instead of Sun/Tue/Thu/Sat).

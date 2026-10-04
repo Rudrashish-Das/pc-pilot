@@ -25,6 +25,7 @@ dependency. The token is part of every API URL, so errors are re-raised without 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html
 import io
 import json
@@ -49,6 +50,8 @@ PENDING_INPUT_SECONDS = 900
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp")
 # Channel ids for topics: above any real Telegram id (< 2^52 ≈ 4.5e15), below Discord's (> 1e16)
 TOPIC_BASE = 9 * 10 ** 15
+# What the Bot API says when a message goes to a topic that was deleted (Telegram sends bots no update for that)
+THREAD_GONE = re.compile(r"message thread not found|TOPIC_DELETED|TOPIC_ID_INVALID", re.I)
 
 COMMANDS = [
     ("panel", "Engine, models, session, settings for this chat"),
@@ -458,18 +461,56 @@ class Telegram:
         return bool(self.username) and not self._closed
 
     def where(self, channel_id: int) -> str:
-        chat, thread = self.place(channel_id)
+        chat = self.place(channel_id)[0]
         name = self._chats.get(chat)
         base = f"Telegram: {name}" if name else ("Telegram chat" if chat > 0 else "Telegram group")
-        if thread is None:
+        t = self._topics.get(channel_id)
+        if t is None:
             return base
-        return f"{base} › {self._topics[channel_id].get('name') or f'topic {thread}'}"
+        return f"{base} › {t.get('name') or 'topic ' + str(t['thread'])}" + (" (deleted)" if t.get("deleted") else "")
+
+    def gone(self, channel_id: int) -> str | None:
+        """'topic «name»' when the topic was deleted (see core.resolve_target)."""
+        t = self._topics.get(channel_id)
+        return f"topic «{t.get('name') or t['thread']}»" if t and t.get("deleted") else None
+
+    PROBE_REPLY_TO = 2 ** 31 - 1  # a message id no chat reaches
+
+    async def probe(self, channel_id: int) -> None:
+        """Before a reminder or scheduled task does any work for a topic, check it still exists, so a deleted one's job
+        runs for the main chat instead. Telegram has no "get topic", and a typing indicator or an unchanged
+        editForumTopic succeed even for deleted topics (tested). A message replying to a message that doesn't exist
+        always fails, so nothing is posted, and the error says which: "message to be replied not found" while the
+        topic exists, "message thread not found" (api() marks it deleted) once it's gone."""
+        t = self._topics.get(channel_id)
+        if not t or t.get("deleted") or not self.ready():
+            return
+        try:
+            sent = await self.api("sendMessage", chat_id=t["chat"], message_thread_id=t["thread"], _probe=True,
+                                  text="pc-pilot: checking this topic still exists",
+                                  reply_parameters={"message_id": self.PROBE_REPLY_TO, "allow_sending_without_reply": False})
+        except TgError:
+            return  # the expected outcome either way
+        with contextlib.suppress(TgError, KeyError, TypeError):  # never expected: posted after all, so take it back
+            await self.api("deleteMessage", chat_id=t["chat"], message_id=sent["message_id"])
+
+    def _topic_gone(self, chat: int, thread: int) -> int | None:
+        """Telegram said this topic doesn't exist: from now on its channel posts to the main chat. Returns its id."""
+        cid = self._topic_ids.get((chat, thread))
+        if cid is None or self._topics[cid].get("deleted"):
+            return None
+        self._topics[cid]["deleted"] = True
+        self.core.STORE.save("tg_topics", self._topics_file, {str(k): v for k, v in self._topics.items()})
+        log.info("Telegram topic %s in chat %s was deleted; its messages go to the main chat now", thread, chat)
+        return cid
 
     # ---- topics: one core channel id per (chat, topic)
     def place(self, cid: int) -> tuple[int, int | None]:
-        """Core channel id -> (Telegram chat id, topic thread id or None)."""
+        """Core channel id -> (Telegram chat id, topic thread id or None). A deleted topic's messages go to its chat."""
         t = self._topics.get(cid)
-        return (t["chat"], t["thread"]) if t else (cid, None)
+        if not t:
+            return cid, None
+        return t["chat"], None if t.get("deleted") else t["thread"]
 
     def subchannels(self, cid: int) -> list[int]:
         """The topic channel ids of a chat (none for a topic itself)."""
@@ -498,6 +539,8 @@ class Telegram:
             self._topics[cid] = {"chat": chat_id, "thread": thread, "name": name, "no_ask_copied": True}
             self._topic_ids[(chat_id, thread)] = cid
             self.core.inherit_settings(cid, chat_id)
+        elif self._topics[cid].pop("deleted", None):
+            log.info("Telegram topic %s in chat %s is in use again", thread, chat_id)  # a message came from it
         elif not name or self._topics[cid].get("name") == name:
             return cid
         self._topics[cid]["name"] = name or self._topics[cid].get("name")
@@ -505,7 +548,8 @@ class Telegram:
         return cid
 
     # ---- Bot API
-    async def api(self, method: str, *, files: dict | None = None, _timeout: float | None = None, **params) -> Any:
+    async def api(self, method: str, *, files: dict | None = None, _timeout: float | None = None, _probe: bool = False,
+                  **params) -> Any:
         params = {k: v for k, v in params.items() if v is not None}
         for attempt in range(4):
             try:
@@ -524,6 +568,22 @@ class Telegram:
             if body.get("error_code") == 429 and retry and attempt < 3:
                 await asyncio.sleep(float(retry) + 0.5)
                 continue
+            thread = params.get("message_thread_id")
+            if thread is not None and THREAD_GONE.search(str(body.get("description", ""))):
+                # The topic was deleted: send to its chat instead of losing the message (a reply that was being
+                # worked on when it happened, a reminder, a scheduled task's result)
+                cid = self._topic_gone(params["chat_id"], thread)
+                if _probe:  # probe(): marking it was the point; the caller notes the move itself
+                    raise TgError(f"Telegram {method}: {body.get('description')}", 400)
+                if method == "sendChatAction":
+                    return True
+                if cid is not None:
+                    with contextlib.suppress(TgError):
+                        await self.api("sendMessage", chat_id=params["chat_id"], parse_mode="HTML", text=(
+                            f"<i>The topic «{_esc(str(self._topics[cid].get('name') or thread))}» was deleted, so "
+                            "what was meant for it comes here now. /tasks shows or cancels its scheduled tasks.</i>"))
+                return await self.api(method, files=files, _timeout=_timeout,
+                                      **{k: v for k, v in params.items() if k != "message_thread_id"})
             raise TgError(f"Telegram {method}: {body.get('description', 'error')}", body.get("error_code") or 0)
         raise TgError(f"Telegram {method}: rate limited", 429)
 

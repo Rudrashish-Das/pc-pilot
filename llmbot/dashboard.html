@@ -1178,7 +1178,18 @@ $("chat-more").addEventListener("click", async () => {
   const name = prompt("Rename this chat (or type DELETE to delete it):", cur ? cur.title : "");
   if (name == null || !name.trim()) return;
   try {
-    if (name.trim() === "DELETE") { await postJSON(`/api/chats/${C.id}/delete`); C.id = null; try { localStorage.removeItem("chat"); } catch (e) {} await loadChats(null); }
+    if (name.trim() === "DELETE") {
+      let r = await postJSON(`/api/chats/${C.id}/delete`);
+      if (r.confirm) {  // it has scheduled tasks / reminders: cancel them, or keep them in a "Scheduled" chat
+        const list = r.confirm.map((it) => `• ${it.kind} ${it.id}: ${it.text}`).join("\n");
+        const scheduled = confirm(`This chat has ${r.confirm.length} scheduled item(s):\n${list}\n\nOK: cancel them and delete the chat.`)
+          ? "cancel"
+          : confirm("Delete the chat but keep them? They'll post in a chat named “Scheduled”.\n\nCancel: don't delete anything.") ? "keep" : null;
+        if (!scheduled) return;
+        r = await postJSON(`/api/chats/${C.id}/delete`, { scheduled });
+      }
+      C.id = null; try { localStorage.removeItem("chat"); } catch (e) {} await loadChats(null);
+    }
     else { await postJSON(`/api/chats/${C.id}/rename`, { title: name.trim() }); await loadChats(C.id); }
   } catch (err) { toast(err.message); }
 });

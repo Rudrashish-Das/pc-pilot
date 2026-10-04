@@ -630,7 +630,14 @@ async def chat_rename(request, fe, chat) -> dict:
 
 
 async def chat_delete(request, fe, chat) -> dict:
-    fe.delete_chat(chat.id)
+    """{"scheduled": "cancel" | "keep"} says what happens to its tasks and reminders; without it, a chat that has some
+    isn't deleted and the page is told which, to ask."""
+    body = await request.json() if request.can_read_body else {}
+    scheduled = body.get("scheduled") if isinstance(body, dict) else None
+    items = fe.scheduled_in(chat.id)
+    if items and scheduled not in ("cancel", "keep"):
+        return {"confirm": items}
+    fe.delete_chat(chat.id, scheduled or "keep")
     return {"ok": True}
 
 

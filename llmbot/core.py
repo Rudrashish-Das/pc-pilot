@@ -590,6 +590,41 @@ async def resolve_channel_patiently(channel_id: int, wait: float = CHANNEL_WAIT)
         delay = min(delay * 2, 30)
 
 
+def parent_chat(channel_id: int) -> int | None:
+    """The chat a thread / topic belongs to (None for a main chat): where its scheduled posts go if it's deleted."""
+    s = _settings.get(str(channel_id)) or {}
+    if s.get("parent"):
+        return int(s["parent"])
+    fe = frontend_for(channel_id)
+    parent = getattr(fe, "parent_of", lambda _c: None)(channel_id)
+    if parent is None and hasattr(fe, "place"):
+        chat, thread = fe.place(channel_id)
+        parent = chat if thread is not None or chat != channel_id else None
+    return parent
+
+
+async def resolve_target(channel_id: int, user_id: int, parent: int | None = None) -> tuple[Any, int, str | None]:
+    """Where a reminder or scheduled task posts: (channel or None, its id, note). When its thread / topic was deleted,
+    that's the chat it belonged to (or, on Discord with none known, a DM with the person), with a note saying so."""
+    fe = frontend_for(channel_id)
+    if fe is not None and hasattr(fe, "probe"):
+        await fe.probe(channel_id)  # Telegram: finds a deleted topic before any work is done for it
+    channel = await resolve_channel_patiently(channel_id)
+    what = getattr(fe, "gone", lambda _c: None)(channel_id) if fe is not None else None
+    if not what:
+        return channel, channel_id, None
+    parent = parent or parent_chat(channel_id)
+    if parent is not None and parent != channel_id:
+        if (pch := await resolve_channel(parent)) is not None:
+            return pch, parent, f"its {what} was deleted, so it posts here now"
+    if isinstance(fe, DiscordFrontend) and bot.is_ready():
+        with contextlib.suppress(discord.HTTPException):
+            dm = await (await bot.fetch_user(user_id)).create_dm()
+            return dm, dm.id, f"its {what} was deleted, so it comes here as a DM"
+    log.warning("Channel %s was deleted and has no chat to fall back to", channel_id)
+    return None, channel_id, None
+
+
 def where(channel_id: int) -> str:
     """How to name a channel in lists: a Discord channel mention, or 'Telegram: <chat name>'."""
     fe = frontend_for(channel_id)
@@ -991,7 +1026,8 @@ def add_task(cron: str, prompt: str, description: str, channel_id: int, user_id:
         "channel_id": channel_id, "created_by": user_id, "created_at": now_local().isoformat(),
     }
     for k, v in (("model", model), ("backend", backend if engine == "claude" else None),
-                 ("workspace", workspace if engine == "claude" else None)):
+                 ("workspace", workspace if engine == "claude" else None),
+                 ("parent", parent_chat(channel_id))):  # where it posts if its thread / topic is deleted
         if v:
             task[k] = v
     task_defaults(task)
@@ -1267,6 +1303,8 @@ def add_reminder(when: str | datetime, text: str, channel_id: int, user_id: int)
     dt = when if isinstance(when, datetime) else parse_when(when)
     r = {"id": "r" + uuid.uuid4().hex[:5], "when": dt.isoformat(), "text": text, "channel_id": channel_id,
          "user_id": user_id, "created_at": now_local().isoformat()}
+    if (parent := parent_chat(channel_id)) is not None:
+        r["parent"] = parent  # where it posts if its thread / topic is deleted
     _reminders[r["id"]] = r
     _schedule_reminder(r)
     _save_reminders()
@@ -1334,10 +1372,11 @@ async def fire_reminder(rid: str) -> None:
         return
     uid, when = r["user_id"], datetime.fromisoformat(r["when"])
     # Kept (and saved) while waiting for the front end: a bot stopped meanwhile fires it again on its next start.
-    channel = await resolve_channel_patiently(r["channel_id"])
+    channel, target, moved = await resolve_target(r["channel_id"], uid, r.get("parent"))
     if _reminders.pop(rid, None) is None:
         return  # cancelled while waiting
     _save_reminders()
+    r = {**r, "channel_id": target}  # its snooze button sets the next one there too
     if channel is None and not is_telegram_id(r["channel_id"]) and bot.is_ready():
         log.warning("Reminder %s: channel %s unavailable, sending as DM", rid, r["channel_id"])
         try:
@@ -1353,6 +1392,8 @@ async def fire_reminder(rid: str) -> None:
     text = redact(f"⏰ <@{uid}> {r['text']}")
     if late:
         text += f"\n-# late: this was due {discord.utils.format_dt(when, 'f')} (bot was offline or the PC was asleep)"
+    if moved:
+        text += f"\n-# {moved}"
     try:  # ping only the person the reminder is for, never roles/@everyone even if the text contains them
         await channel.send(text, allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, replied_user=False,
                                                                     users=[discord.Object(uid)]),
@@ -3739,9 +3780,16 @@ async def run_scheduled_task(task_id: str, run_by: int | None = None) -> None:
     if not task:
         return
     # Waits for the front end first (right after start or waking up), so a missed one-shot isn't lost
-    channel = await resolve_channel_patiently(task["channel_id"])
+    channel, target, moved = await resolve_target(task["channel_id"], task["created_by"], task.get("parent"))
     if _tasks.get(task_id) is not task:
         return  # cancelled while waiting
+    if moved:  # its thread / topic is gone: it lives in that chat from now on (one-shots are removed just below)
+        log.info("Task %s: %s (%s -> %s)", task_id, moved, task["channel_id"], target)
+        note_event("task", task["description"], channel_id=target, user_id=task["created_by"], status="moved",
+                   ref=task_id, note=moved)
+        task["channel_id"] = target
+        task.pop("parent", None)
+        _save_tasks()
     if task.get("at"):  # one-shot: remove before running so a crash can't repeat it
         _tasks.pop(task_id, None)
         if run_by is not None and scheduler.get_job(task_id):
@@ -3756,6 +3804,8 @@ async def run_scheduled_task(task_id: str, run_by: int | None = None) -> None:
         head += f"\n-# run now by <@{run_by}>"
     elif task.get("at") and now_local() - datetime.fromisoformat(task["at"]) > REMINDER_LATE:
         head += f"\n-# late: was due {discord.utils.format_dt(datetime.fromisoformat(task['at']), 'f')} (bot was offline or the PC was asleep)"
+    if moved:
+        head += f"\n-# {moved}" + ("" if task.get("at") else "; /tasks cancels it")
     task_defaults(task)
     authority = task_authority(task)  # re-checked every run: OWNER_IDS may have changed since it was allowed
     reminders_ok = task["reminders"] and authority
@@ -3799,8 +3849,12 @@ async def run_scheduled_task(task_id: str, run_by: int | None = None) -> None:
         log.exception("scheduled task %s failed", task_id)
         text = with_hint(f"⚠️ Task failed: {oneline(redact(e), 300)}", type(e).__name__, where="local", model=model)
     out = Out(channel, ping=uid)
-    for chunk in split_message(redact(f"{head}\n{text}")):
-        await out(content=chunk)
+    try:
+        for chunk in split_message(redact(f"{head}\n{text}")):
+            await out(content=chunk)
+    except discord.HTTPException as e:
+        log.error("Task %s: result could not be posted in %s: %s", task_id, where(task["channel_id"]),
+                  oneline(redact(e), 200))
 
 
 # =============================================================================
@@ -4742,8 +4796,25 @@ class DiscordFrontend:
     def owns(self, channel_id: int) -> bool:
         return bool(DISCORD_TOKEN) and not is_telegram_id(channel_id) and not is_web_id(channel_id)
 
+    def __init__(self):
+        self._gone: set[int] = set()  # channels / threads Discord says no longer exist
+
     async def get_channel(self, channel_id: int):
-        return bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+        if ch := bot.get_channel(channel_id):
+            return ch
+        try:
+            ch = await bot.fetch_channel(channel_id)
+        except discord.NotFound:  # deleted (a lost permission is Forbidden, not this)
+            self._gone.add(channel_id)
+            raise
+        self._gone.discard(channel_id)
+        return ch
+
+    def gone(self, channel_id: int) -> str | None:
+        """'thread' / 'channel' when Discord said it was deleted (see resolve_target)."""
+        if channel_id not in self._gone:
+            return None
+        return "thread" if parent_chat(channel_id) is not None else "channel"
 
     def where(self, channel_id: int) -> str:
         return f"<#{channel_id}>"

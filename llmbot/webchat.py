@@ -412,10 +412,32 @@ class WebFrontend:
         self.save()
         return chat
 
-    def delete_chat(self, cid: int) -> None:
+    def scheduled_in(self, cid: int) -> list[dict]:
+        """The scheduled tasks and reminders that post in this chat (asked about before deleting it)."""
+        return ([{"kind": "task", "id": t["id"], "text": t["description"]} for t in core._tasks.values()
+                 if t["channel_id"] == cid]
+                + [{"kind": "reminder", "id": r["id"], "text": r["text"]} for r in core._reminders.values()
+                   if r["channel_id"] == cid])
+
+    def delete_chat(self, cid: int, scheduled: str = "keep") -> None:
+        """scheduled: what happens to its tasks and reminders: "cancel", or "keep" (they move to a chat named
+        Scheduled, so they don't bring the deleted one back)."""
         chat = self.chats.pop(cid, None)
         if chat is None:
             return
+        items = self.scheduled_in(cid)
+        if items and scheduled == "cancel":
+            for it in items:
+                (core.cancel_task if it["kind"] == "task" else core.cancel_reminder)(it["id"], core.WEB_USER_ID)
+        elif items:
+            home = next((c for c in self.chats.values() if c.title == "Scheduled"), None) or self.new_chat("Scheduled")
+            for it in items:
+                (core._tasks if it["kind"] == "task" else core._reminders)[it["id"]]["channel_id"] = home.id
+            core._save_tasks()
+            core._save_reminders()
+            home.post("bot", f"-# Moved here from the deleted chat “{chat.title}”: "
+                             + ", ".join(f"{it['kind']} `{it['id']}` ({core.clip(it['text'], 60)})" for it in items)
+                             + ". /tasks shows or cancels them.")
         for row in chat.messages:
             for f in row.get("files") or []:
                 p = self.file_path((f.get("url") or "").rsplit("/", 1)[-1])
