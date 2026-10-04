@@ -4885,6 +4885,8 @@ async def core_start() -> None:
     if binary and CC_SKILLS:
         _spawn(discover_cc_skills())  # for /skill's name list; each job refreshes it
     note_event("bot", f"Bot started (llmbot {__version__}, storage: {STORE.kind})")
+    if GUEST_IDS:  # the first look at every process takes ~1 s (cached after): not on the guest's first /status
+        _spawn(asyncio.to_thread(pcstatus.running_games))
     if DASHBOARD_PORT:
         from llmbot import dashboard
 
