@@ -223,6 +223,14 @@ def api(fn):
     return wrapper
 
 
+def qint(value: Any, default: Any) -> Any:
+    """A number from a query string or JSON body; the default when it's missing or not a number (no 500s)."""
+    try:
+        return int(value) if value not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
+
+
 def _dumps(obj: Any) -> str:
     import json
     return json.dumps(obj, ensure_ascii=False, default=str)
@@ -445,7 +453,7 @@ def frontends() -> list[dict]:
 
 
 async def state(request: web.Request) -> dict:
-    since = int(request.query.get("since") or 0)
+    since = qint(request.query.get("since"), 0)
     events = [e for e in core._events if e["id"] > since][-200:]
     pending = core.power_pending()
     # ?lite=1: the page isn't showing the Now tab, so skip what only it shows (nvidia-smi, Ollama's model lists).
@@ -482,15 +490,15 @@ async def state(request: web.Request) -> dict:
 
 async def events(request: web.Request) -> dict:
     """Older activity, from the store: ?before=<event id>&limit=100"""
-    before = int(request.query["before"]) if request.query.get("before") else None
-    limit = max(1, min(int(request.query.get("limit") or 100), 500))
+    before = qint(request.query.get("before"), None)
+    limit = max(1, min(qint(request.query.get("limit"), 100), 500))
     rows = await asyncio.to_thread(core.STORE.recent_events, limit, before)
     return {"events": rows}
 
 
 async def jobs(request: web.Request) -> dict:
     """Claude Code job history: ?before=<finished_at>&limit=50"""
-    limit = max(1, min(int(request.query.get("limit") or 50), 200))
+    limit = max(1, min(qint(request.query.get("limit"), 50), 200))
     rows = await asyncio.to_thread(core.STORE.recent_jobs, limit, request.query.get("before") or None)
     for r in rows:
         r.update(_names(r.get("channel_id"), r.get("user_id")))
@@ -499,7 +507,7 @@ async def jobs(request: web.Request) -> dict:
 
 async def logtail(request: web.Request) -> dict:
     """The end of bot.log, redacted."""
-    n = max(10, min(int(request.query.get("lines") or 300), 2000))
+    n = max(10, min(qint(request.query.get("lines"), 300), 2000))
 
     def read() -> list[str]:
         path = core.DATA_DIR / "bot.log"
@@ -628,7 +636,7 @@ async def chat_delete(request, fe, chat) -> dict:
 
 async def chat_get(request, fe, chat) -> dict:
     job = next((j for j in list(core._cc_running) if getattr(j.channel, "id", None) == chat.id), None)
-    return {**chat.since(int(request.query.get("since") or 0)), "chat": chat.summary(), "typing": chat.typing > 0,
+    return {**chat.since(qint(request.query.get("since"), 0)), "chat": chat.summary(), "typing": chat.typing > 0,
             "job": job_info(job) if job else None}
 
 
@@ -661,8 +669,10 @@ async def _soon(coro, seconds: float = 10) -> dict:
 
 async def chat_press(request, fe, chat) -> dict:
     b = await request.json()
-    opt = b.get("opt")
-    return await _soon(fe.press(chat, int(b["mid"]), int(b["i"]), None if opt is None else int(opt)))
+    mid, idx, opt = qint(b.get("mid"), None), qint(b.get("i"), None), qint(b.get("opt"), None)
+    if mid is None or idx is None:
+        return {"toast": "That button no longer exists."}
+    return await _soon(fe.press(chat, mid, idx, opt))
 
 
 async def chat_modal(request, fe, chat) -> dict:

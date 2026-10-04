@@ -29,7 +29,9 @@ check(len(B.split_message("y" * 5000)) == 3, "hard split long line")
 print("== cron")
 check(B.normalize_crontab("0 9 * * 0") == "0 9 * * sun", "dow 0 -> sun")
 check(B.normalize_crontab("0 9 * * 1-5") == "0 9 * * mon-fri", "dow range")
-check(B.normalize_crontab("*/15 * * * */2") == "*/15 * * * */2", "dow step untouched")
+check(B.normalize_crontab("*/15 * * * */2") == "*/15 * * * sun,tue,thu,sat", "dow step counts from Sunday")
+check(B.normalize_crontab("0 9 * * 0-6") == "0 9 * * sun,mon,tue,wed,thu,fri,sat", "dow range from 0 (was rejected)")
+check(B.normalize_crontab("0 9 * * 0-3/3,5") == "0 9 * * sun,wed,fri", "dow range with step")
 check(B.normalize_crontab("0 9 * * 7") == "0 9 * * sun", "dow 7 -> sun")
 t = B.validate_cron("0 9 * * 0")
 check(t.get_next_fire_time(None, B.now_local()).strftime("%a") == "Sun", "0 = Sunday fires on Sunday")
@@ -118,7 +120,7 @@ async def local():
     check(r.text == "forced final" and len(calls) == B.MAX_TOOL_ROUNDS + 1, f"tool cap -> forced answer ({len(calls)} calls)")
     # cancel permissions
     tid = saved[0]["id"]
-    check("Only the task's creator" in B.cancel_task(tid, 999), "non-creator can't cancel")
+    check(B.cancel_task(tid, 999).startswith("No task") and tid in B._tasks, "non-creator can't cancel (or see it)")
     B.OWNER_IDS.add(7)
     check("Cancelled" in B.cancel_task(tid, 7), "owner can cancel")
     # min interval via tool

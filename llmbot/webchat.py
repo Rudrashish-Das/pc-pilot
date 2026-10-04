@@ -306,12 +306,32 @@ class WebFrontend:
         self._next_mid = int(time.time() * 1000)
         self._modals: dict[str, tuple[Any, WebMessage, float]] = {}
         self._save_handle: asyncio.TimerHandle | None = None
-        data =core.STORE.load("webchat", self.path, {}) or {}
+        data = core.STORE.load("webchat", self.path, {}) or {}
         for c in data.get("chats", []):
             chat = Chat(self, int(c["id"]), c.get("title") or "Chat", c.get("created") or time.time(), c.get("messages"))
             self.chats[chat.id] = chat
             self.v = max(self.v, chat.v)
+        # Lowest chat id ever handed out: ids are never reused, so a new chat can't pick up a deleted one's state.
+        # Ids left in settings / memory by chats deleted before deleting cleaned up count too.
+        known = [int(k) for k in (*core._settings, *core._history) if core.is_web_id(int(k))]
+        self.last_id = min([int(data.get("last_id") or -core.WEB_ID_BASE), *self.chats, *known])
+        self._drop_orphans()
         self._prune_files()
+
+    def _drop_orphans(self) -> None:
+        """Settings (with their Claude Code session) and local-model memory of web chats deleted before
+        delete_chat cleaned them up. A reminder or task for such a chat still works: get_channel brings it back."""
+        gone = {int(k) for k in (*core._settings, *core._history)
+                if core.is_web_id(int(k)) and int(k) != core.WEB_USER_ID and int(k) not in self.chats}
+        if not gone:
+            return
+        for cid in gone:
+            core._history.pop(cid, None)
+            core._settings.pop(str(cid), None)
+        core._save_history()
+        core.STORE.save("settings", core.SETTINGS_FILE, core._settings)
+        self.save()  # records last_id, so the ids stay retired
+        log.info("Removed leftover settings of %d deleted web chat(s)", len(gone))
 
     # ---- front-end interface used by the core (see core._frontends)
     def owns(self, channel_id: int) -> bool:
@@ -343,7 +363,7 @@ class WebFrontend:
 
     def flush(self) -> None:
         self._save_handle = None
-        core.STORE.save("webchat", self.path, {"chats": [
+        core.STORE.save("webchat", self.path, {"last_id": self.last_id, "chats": [
             {"id": c.id, "title": c.title, "created": c.created, "messages": c.messages} for c in self.chats.values()]})
 
     def save_file(self, mid: int, f: discord.File) -> dict | None:
@@ -379,9 +399,10 @@ class WebFrontend:
     # ---- chats
     def new_chat(self, title: str = "", cid: int | None = None) -> Chat:
         if cid is None:
-            cid = min(self.chats, default=-core.WEB_ID_BASE) - 1
+            cid = min([self.last_id, *self.chats]) - 1
         if not core.is_web_id(cid) or cid == core.WEB_USER_ID:
             raise ValueError("not a web chat id")
+        self.last_id = min(self.last_id, cid)
         while len(self.chats) >= CHATS_MAX:  # drop the least recently used
             self.delete_chat(min(self.chats.values(), key=lambda c: c.updated).id)
         chat = Chat(self, cid, (title or "").strip()[:60] or time.strftime("Chat %d %b %H:%M"), time.time())
@@ -400,6 +421,9 @@ class WebFrontend:
                 p = self.file_path((f.get("url") or "").rsplit("/", 1)[-1])
                 if p:
                     p.unlink(missing_ok=True)
+        core.forget_history(cid)  # its local-model memory; its settings (and Claude Code session) go too
+        if core._settings.pop(str(cid), None) is not None:
+            core.STORE.save("settings", core.SETTINGS_FILE, core._settings)
         self.save()
 
     # ---- the user's side
@@ -519,6 +543,8 @@ class WebFrontend:
         view = msg.view if msg else None
         if view is None or view.is_finished():
             return {"toast": "These buttons have expired; send the command again."}
+        if idx < 0 or (opt is not None and opt < 0):  # no Python negative indexing from the page
+            return {"toast": "That button no longer exists."}
         try:
             item = view.children[idx]
         except IndexError:
@@ -545,8 +571,11 @@ class WebFrontend:
         if modal is not None:
             box = next((c for c in modal.children if isinstance(c, discord.ui.TextInput)), None)
             if box is not None:
+                now = time.monotonic()
+                for old in [t for t, (_, _, deadline) in self._modals.items() if deadline < now]:
+                    del self._modals[old]  # forms opened and never sent
                 tok = secrets.token_urlsafe(8)
-                self._modals[tok] = (modal, fi.message, time.monotonic() + 900)
+                self._modals[tok] = (modal, fi.message, now + 900)
                 res["modal"] = {"token": tok, "title": modal.title, "label": box.label, "default": box.default or "",
                                 "long": box.style == discord.TextStyle.paragraph, "max": box.max_length}
         return res
@@ -670,8 +699,12 @@ def list_sessions(limit: int = 100) -> list[dict]:
     files = []
     for name, ws in core.WORKSPACES.items():
         d = _projects_dir(ws)
-        files += [(p, name) for p in d.glob("*.jsonl")] if d.is_dir() else []
-    files.sort(key=lambda f: -f[0].stat().st_mtime)
+        for p in d.glob("*.jsonl") if d.is_dir() else []:
+            try:
+                files.append((p.stat().st_mtime, p, name))
+            except OSError:  # deleted since the listing
+                continue
+    files = [(p, name) for _, p, name in sorted(files, key=lambda f: -f[0])]
     held = {s.get("cc_session"): cid for cid in (_fe.chats if _fe else {})
             for s in [core.get_settings(cid)] if s.get("cc_session")}
     out = []

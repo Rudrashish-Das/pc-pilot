@@ -77,7 +77,8 @@ async def core():
     await B.fire_reminder("rold")
     check("late: this was due" in sent[0][0], "missed reminder says it's late")
     r2 = B.add_reminder("in 1 hour", "@everyone <@&123> ping <@999>", CH, OWNER)
-    check(B.cancel_reminder(r2["id"], 999).startswith("Only"), "others can't cancel")
+    check(B.cancel_reminder(r2["id"], 999).startswith("No reminder") and r2["id"] in B._reminders,
+          "others can't cancel (or tell that it exists)")
     check(B.cancel_reminder(r2["id"], OWNER).startswith("Cancelled") and not B.scheduler.get_job(f"rem-{r2['id']}"),
           "cancel removes the job")
     r3 = B.add_reminder("in 3 hours", "reload me", CH, OWNER)

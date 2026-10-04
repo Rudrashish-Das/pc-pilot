@@ -3,6 +3,17 @@
 Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `bot_v22.py`). From 0.23.0 on, git history is the record.
 
 ## Unreleased
+- Fixed: reminders and one-shot scheduled prompts that came due while the bot was off (or the PC asleep) could be lost: they fired 10 s after start, before Discord had logged in, found no channel and were dropped. They now wait (up to 15 minutes, still saved) for Discord or Telegram to connect.
+- Fixed: a scheduled Claude Code run replaced the chat's own session with its fresh one, so your next message continued the scheduled run instead of your conversation.
+- Fixed: cron weekday ranges starting at 0 (`0 9 * * 0-6`, `0-3`) were rejected, and steps counted from Monday (`*/2` ran Mon/Wed/Fri/Sun instead of Sun/Tue/Thu/Sat).
+- Fixed: a reply that set a reminder, task or delete lost its other notes ("learned skill …", the small-context-window warning).
+- Fixed: a long Discord chat reply plus its notes could pass 2000 characters, so Discord refused it, part of the reply went missing and requested file deletes were skipped. Notes that don't fit now go in their own message.
+- Fixed: continuing a session the bot had no cost record for (opened from the dashboard after running in a terminal) counted its whole lifetime cost as today's spend, tripping the daily cap at once.
+- Fixed: the sign-in handoff could exit in the middle of a local-model reply (between its web searches) or a voice transcription.
+- Fixed: a deleted dashboard chat's id was reused by the next new chat, which then continued the old chat's Claude Code session and memory.
+- Fixed: "in 99999999999 days" crashed the reply instead of saying it's too far away; a failure while posting a Claude Code reply now says so instead of leaving no answer.
+- Fixed: a failed `bot.log` rollover (file locked) recursed thousands of times on every log line until the file was free.
+- Cancelling someone else's task or reminder now says "no task/reminder with that id" instead of confirming it exists. Bad numbers sent to the dashboard's API get a normal answer instead of a server error.
 - Fixed: with `bot_control.ps1 boot`, Claude Code using Chrome signed you out of Google and every other site. The boot copy runs in session 0 under an S4U logon, which has no password and so no DPAPI keys: Chrome started from there can't decrypt the profile's cookies. It also stayed in session 0 after sign-in, because the Startup apps launcher saw it running and did nothing. Now the launcher asks it to hand over at sign-in. It exits once no job is running, and the launcher starts the bot again in your desktop session. Run `bot_control.ps1 install` once to rebuild the launcher.
   - Before sign-in (the boot copy, session 0), Claude Code jobs get no browser: `--no-chrome`, no Claude in Chrome or computer-use tools, and a `[Browser: not available …]` line telling them not to start Chrome. They use WebSearch/WebFetch, or say the task needs someone signed in to the PC.
 - Fixed: a failed lookup of Claude Code's skills (CLI missing, timeout) made every `/skills` or `/skill` typo start another one (up to 60 s each), and an error starting the CLI left Discord's `/skills` "thinking" forever. Failures are now caught and not retried for 5 minutes.

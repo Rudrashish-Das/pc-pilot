@@ -561,7 +561,7 @@ def frontend_for(channel_id: int):
     return next((fe for fe in _frontends if fe.owns(channel_id)), None)
 
 
-async def resolve_channel(channel_id: int):
+async def resolve_channel(channel_id: int, quiet: bool = False):
     """Channel object for a stored channel id (reminders, scheduled tasks), or None if unavailable."""
     fe = frontend_for(channel_id)
     if fe is None:
@@ -569,8 +569,25 @@ async def resolve_channel(channel_id: int):
     try:
         return await fe.get_channel(channel_id)
     except Exception as e:
-        log.warning("channel %s unavailable: %s", channel_id, oneline(redact(e), 200))
+        if not quiet:
+            log.warning("channel %s unavailable: %s", channel_id, oneline(redact(e), 200))
         return None
+
+
+CHANNEL_WAIT = 900  # seconds a due reminder / task waits for its front end to connect (after boot or waking up)
+
+
+async def resolve_channel_patiently(channel_id: int, wait: float = CHANNEL_WAIT):
+    """resolve_channel, but while the chat's front end isn't connected yet (right after start or waking from sleep,
+    when missed reminders and tasks fire), keep trying instead of giving up and losing them."""
+    deadline, delay = time.monotonic() + wait, 2.0
+    while True:
+        channel = await resolve_channel(channel_id, quiet=True)
+        fe = frontend_for(channel_id)
+        if channel is not None or fe is None or getattr(fe, "ready", lambda: True)() or time.monotonic() >= deadline:
+            return channel if channel is not None else await resolve_channel(channel_id)  # logs why it failed
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, 30)
 
 
 def where(channel_id: int) -> str:
@@ -872,12 +889,32 @@ async def fetch_page(url: str) -> str:
 _DOW_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
+_DOW_PART = re.compile(r"(\*|[0-7])(?:-([0-7]))?(?:/(\d+))?")
+
+
+def _dow_part(part: str) -> str:
+    """One comma part of a numeric day_of_week ('0-6', '1-5', '*/2', '3') -> day names. Expanded rather than mapped
+    one by one: 'sun-sat' would be an empty range to APScheduler (its week starts on Monday), and its '*/2' counts
+    from Monday."""
+    m = _DOW_PART.fullmatch(part)
+    if not m or (m.group(1) == "*" and not m.group(3)):
+        return part  # names ('mon-fri'), '*', or something APScheduler will reject with a clear message
+    step = int(m.group(3) or 1)
+    lo = 0 if m.group(1) == "*" else int(m.group(1))
+    hi = 6 if m.group(1) == "*" else int(m.group(2)) if m.group(2) else (7 if m.group(3) else lo)
+    if lo > hi or step < 1:
+        raise ValueError(f"bad day_of_week '{part}'")
+    if lo >= 1 and step == 1:
+        return _DOW_NAMES[lo] if lo == hi else f"{_DOW_NAMES[lo]}-{_DOW_NAMES[hi]}"  # 'mon-fri', 'mon-sun'
+    return ",".join(dict.fromkeys(_DOW_NAMES[n] for n in range(lo, hi + 1, step)))
+
+
 def normalize_crontab(expr: str) -> str:
     """APScheduler 3.x treats numeric day_of_week 0 as Monday; convert to names so 0/7=Sunday like real cron."""
     fields = expr.split()
     if len(fields) != 5:
         raise ValueError("cron must have 5 fields: minute hour day month day_of_week")
-    fields[4] = re.sub(r"(?<![/\w])([0-7])(?![\w])", lambda m: _DOW_NAMES[int(m.group(1))], fields[4])
+    fields[4] = ",".join(_dow_part(p) for p in fields[4].split(","))
     return " ".join(fields)
 
 
@@ -968,10 +1005,8 @@ def add_task(cron: str, prompt: str, description: str, channel_id: int, user_id:
 
 def cancel_task(task_id: str, user_id: int) -> str:
     task = _tasks.get(task_id.strip())
-    if not task:
+    if not task or not visible_to(task["created_by"], user_id):  # others' tasks aren't even confirmed to exist
         return f"No task with id '{task_id}'."
-    if task["created_by"] != user_id and not is_owner(user_id):
-        return "Only the task's creator or an owner can cancel it."
     _tasks.pop(task["id"])
     if scheduler.get_job(task["id"]):
         scheduler.remove_job(task["id"])
@@ -1173,6 +1208,8 @@ def parse_when(text: str, now: datetime | None = None) -> datetime:
     parts = _REL_RE.findall(rel) if re.fullmatch(rf"(?:{_REL_RE.pattern}\s*)+", rel) else []
     if parts and all(unit in _UNIT_SECONDS for _, unit in parts):  # "12am" matches the shape but isn't relative
         secs = sum((1 if num in ("a", "an") else float(num)) * _UNIT_SECONDS[unit] for num, unit in parts)
+        if secs > REMINDER_MAX_AHEAD.total_seconds():  # also keeps "in 99999999999 days" from overflowing timedelta
+            raise ValueError("that's more than a year away")
         dt = now + timedelta(seconds=secs)
     else:
         try:
@@ -1240,10 +1277,8 @@ def add_reminder(when: str | datetime, text: str, channel_id: int, user_id: int)
 
 def cancel_reminder(rid: str, user_id: int) -> str:
     r = _reminders.get(rid.strip())
-    if not r:
+    if not r or not visible_to(r["user_id"], user_id):  # others' reminders aren't even confirmed to exist
         return f"No reminder with id '{rid}'."
-    if r["user_id"] != user_id and not is_owner(user_id):
-        return "Only the person it's for or an owner can cancel it."
     _reminders.pop(r["id"])
     if scheduler.get_job(f"rem-{r['id']}"):
         scheduler.remove_job(f"rem-{r['id']}")
@@ -1294,12 +1329,15 @@ def extract_reminders(text: str, channel_id: int, user_id: int) -> tuple[str, li
 
 
 async def fire_reminder(rid: str) -> None:
-    r = _reminders.pop(rid, None)
+    r = _reminders.get(rid)
     if not r:
         return
-    _save_reminders()
     uid, when = r["user_id"], datetime.fromisoformat(r["when"])
-    channel = await resolve_channel(r["channel_id"])
+    # Kept (and saved) while waiting for the front end: a bot stopped meanwhile fires it again on its next start.
+    channel = await resolve_channel_patiently(r["channel_id"])
+    if _reminders.pop(rid, None) is None:
+        return  # cancelled while waiting
+    _save_reminders()
     if channel is None and not is_telegram_id(r["channel_id"]) and bot.is_ready():
         log.warning("Reminder %s: channel %s unavailable, sending as DM", rid, r["channel_id"])
         try:
@@ -1882,14 +1920,15 @@ def _pid_alive(pid: int) -> bool:
         except OSError:
             return False
     import ctypes  # os.kill(pid, 0) would terminate the process on Windows
-    k32 = ctypes.windll.kernel32
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
     if not h:
-        return False
-    code = ctypes.c_ulong()
-    ok = k32.GetExitCodeProcess(h, ctypes.byref(code))
-    k32.CloseHandle(h)
-    return bool(ok) and code.value == 259  # STILL_ACTIVE
+        return ctypes.get_last_error() == 5  # access denied: it exists (e.g. another session's process)
+    try:
+        code = ctypes.c_ulong()
+        return bool(k32.GetExitCodeProcess(h, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+    finally:
+        k32.CloseHandle(h)
 
 
 def session_open_elsewhere(sid: str | None) -> str | None:
@@ -2603,7 +2642,13 @@ async def _run_job_inner(job: CCJob) -> None:
         job.ended = time.monotonic()
         job.status = "done"
         renderer.cancel()
-        await _finalize(job)
+        try:
+            await _finalize(job)
+        except Exception as e:  # a bug in post-processing must not swallow the reply without a word
+            log.exception("Finishing Claude Code job %s failed", job.id)
+            with contextlib.suppress(Exception):
+                await job.out(content=f"⚠️ The job finished, but posting its reply failed: {type(e).__name__}: "
+                                      f"{oneline(redact(e), 200)}. /log has the full output.")
 
 
 _usage: dict = {}
@@ -2840,7 +2885,8 @@ def record_cost(job: CCJob) -> None:
         return
     seen: dict = _usage.setdefault("sessions", {})
     sid = job.parser.session_id
-    prev = seen.get(sid) if job.snap.resume else 0.0
+    prev = (seen.get(sid) if seen.get(sid) is not None or not job.snap.fork else seen.get(job.snap.resume)) \
+        if job.snap.resume else 0.0
     job.cost_session = float(total)
     job.cost_this = max(0.0, total - prev) if prev is not None else None
     if sid:
@@ -2849,7 +2895,13 @@ def record_cost(job: CCJob) -> None:
         for old in list(seen)[:-300]:  # keep the file small
             seen.pop(old)
     if job.snap.backend == "anthropic":
-        add_spend(job.cost_this if job.cost_this is not None else total)
+        # A resumed session we have no total for (opened from the dashboard after running in a terminal, or older
+        # than the 300 kept) reports its whole lifetime cost: that's not today's spend, and counting it would trip
+        # the daily cap at once. Its total is the baseline from now on, so later messages count exactly.
+        if job.cost_this is None:
+            log.info("CC job %s: resumed session %s had no earlier total; $%.4f not counted as today's spend",
+                     job.id, (sid or "?")[:8], total)
+        add_spend(job.cost_this or 0.0)
     else:
         STORE.save("usage", USAGE_FILE, _usage)
 
@@ -2943,7 +2995,8 @@ async def _finalize(job: CCJob) -> None:
                 text = REMIND_RE.sub("", text).strip()
                 job.notices.append("⚠️ this task isn't allowed to set reminders (an owner can allow it in /tasks)")
         else:
-            text, job.notices = extract_reminders(text, ch_id, job.user_id)
+            text, lines = extract_reminders(text, ch_id, job.user_id)
+            job.notices += lines
             text, lines = extract_tasks(text, ch_id, job.user_id, job.snap)
             job.notices += lines
         text, deletes, lines = plan_deletes(text, job.snap)
@@ -2951,14 +3004,16 @@ async def _finalize(job: CCJob) -> None:
         r0["result"] = text or "👍"
     if r0 and job.outcome() == "success" and not job.scheduled and not job.snap.compact:
         job.notices += unbacked_claims(job.task, r0.get("result") or "", raw)
-    # Remember the session for "continue", unless backend/workspace changed during the run.
+    # Remember the session for "continue", unless backend/workspace changed during the run. A scheduled run has its
+    # own fresh session: it must not replace the conversation the chat is having.
     if job.snap.backend == "ollama":
         touch_model(OLLAMA_URL, job.snap.model)
     if job.parser.session_id:
         skills_mod.mark_sent(job.parser.session_id, job.skills)
     ch_id = getattr(job.channel, "id", 0)
     cur = get_settings(ch_id)
-    if job.parser.session_id and cur["cc_backend"] == job.snap.backend and cur["workspace"] == job.snap.workspace:
+    if (job.parser.session_id and not job.scheduled and cur["cc_backend"] == job.snap.backend
+            and cur["workspace"] == job.snap.workspace):
         update_settings(ch_id, cc_session=job.parser.session_id, cc_session_at=time.time(),
                         cc_session_path=str(WORKSPACES.get(job.snap.workspace, "")),
                         cc_session_setup=CC_SETUP_FINGERPRINT, cc_session_ctx=job.parser.context_tokens,
@@ -3248,8 +3303,12 @@ async def _send_chat_reply(job: CCJob) -> bool:
     if len(chunks) > 4:  # very long: first part in chat, the rest as a file
         files.append(discord.File(io.BytesIO(text.encode("utf-8")), filename="reply.md"))
         chunks = [clip(chunks[0], 1800) + "\n*(full reply in reply.md)*"]
-    if job.notices:
-        chunks[-1] += "".join(f"\n-# {line}" for line in job.notices)
+    if job.notices:  # Discord refuses messages over 2000 characters: notes that don't fit go in their own message
+        extra = "\n".join(f"-# {line}" for line in job.notices)
+        if len(chunks[-1]) + len(extra) + 1 <= 1990:
+            chunks[-1] += "\n" + extra
+        else:
+            chunks += split_message(extra)
     stats = chat_stats(job, notes)
     if len(chunks[-1]) + len(stats) + 1 <= 1990:
         chunks[-1] += "\n" + stats
@@ -3679,12 +3738,15 @@ async def run_scheduled_task(task_id: str, run_by: int | None = None) -> None:
     task = _tasks.get(task_id)
     if not task:
         return
+    # Waits for the front end first (right after start or waking up), so a missed one-shot isn't lost
+    channel = await resolve_channel_patiently(task["channel_id"])
+    if _tasks.get(task_id) is not task:
+        return  # cancelled while waiting
     if task.get("at"):  # one-shot: remove before running so a crash can't repeat it
         _tasks.pop(task_id, None)
         if run_by is not None and scheduler.get_job(task_id):
             scheduler.remove_job(task_id)  # run early: it doesn't run again when it's due
         _save_tasks()
-    channel = await resolve_channel(task["channel_id"])
     if channel is None:
         log.warning("Task %s: channel %s unavailable", task_id, task["channel_id"])
         return
@@ -4686,6 +4748,10 @@ class DiscordFrontend:
     def where(self, channel_id: int) -> str:
         return f"<#{channel_id}>"
 
+    def ready(self) -> bool:
+        """Connected (see resolve_channel_patiently): before login, fetch_channel can't work."""
+        return bot.is_ready()
+
     def parent_of(self, channel_id: int) -> int | None:
         """A thread (or forum post) -> its channel, whose settings it starts with (see get_settings)."""
         ch = bot.get_channel(channel_id)
@@ -5226,20 +5292,6 @@ async def power_watch() -> None:
 HANDOFF_FILE = BASE_DIR / "bin" / "logon-handoff"  # scripts/launcher.cs writes it (its PID) at sign-in
 
 
-def _pid_alive(pid: int) -> bool:
-    import ctypes
-
-    k32 = ctypes.windll.kernel32
-    h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-    if not h:
-        return k32.GetLastError() == 5  # access denied: it exists
-    try:
-        code = ctypes.c_ulong()
-        return bool(k32.GetExitCodeProcess(h, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
-    finally:
-        k32.CloseHandle(h)
-
-
 async def logon_handoff_watch() -> None:
     """Started at boot (bot_control.ps1 boot), the bot runs in session 0 under an S4U logon: no password, so no
     DPAPI keys. Claude Code jobs started from there can't decrypt Chrome's cookies and sign the user out of
@@ -5255,7 +5307,8 @@ async def logon_handoff_watch() -> None:
             continue
         if not _pid_alive(pid):  # the launcher is gone (signed out): nobody would start us again
             continue
-        busy = _cc_running or _cc_waiting or _llm_lock.locked()
+        # _inflight: local replies and tasks (the lock is free between their tool calls), voice notes being transcribed
+        busy = _cc_running or _cc_waiting or _llm_lock.locked() or _inflight or _whisper_lock.locked()
         idle_checks = 0 if busy else idle_checks + 1
         if idle_checks < 2:  # idle for 10+ s: time for a finished job's reply to be posted
             continue

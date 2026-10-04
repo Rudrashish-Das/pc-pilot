@@ -81,15 +81,27 @@ def enforce(folder: Path) -> list[Path]:
 class CappedRotatingFileHandler(RotatingFileHandler):
     """RotatingFileHandler that rolls over into timestamped (gzipped) archives and keeps the folder under the cap."""
 
+    RETRY_SECONDS = 60
+
     def __init__(self, path: Path):
         super().__init__(path, maxBytes=file_bytes, backupCount=1, encoding="utf-8", delay=False)
+        self._retry_at = 0.0
+
+    def shouldRollover(self, record: logging.LogRecord) -> bool:
+        # After a failed rollover, wait before trying again: the warning about it goes through this same handler,
+        # and retrying right away would recurse (and repeat on every line while the file stays locked)
+        return time.monotonic() >= self._retry_at and bool(super().shouldRollover(record))
 
     def doRollover(self) -> None:
         if self.stream:
             self.stream.close()
             self.stream = None
+        error = None
         try:
             archive(Path(self.baseFilename))
-        except OSError as e:  # e.g. the file is open elsewhere; keep logging to it and try again next time
-            logging.getLogger("llmbot").warning("log rollover failed: %s", e)
+        except OSError as e:  # e.g. the file is open elsewhere; keep logging to it and try again later
+            error = e
+            self._retry_at = time.monotonic() + self.RETRY_SECONDS
         self.stream = self._open()
+        if error is not None:
+            logging.getLogger("llmbot").warning("log rollover failed (retrying in %ds): %s", self.RETRY_SECONDS, error)

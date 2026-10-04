@@ -94,7 +94,8 @@ check(len(names) == 1 and "call mum" in names[0], "/tasks for a member: only the
 check(len(B.tasks_embed(owner).to_dict()["fields"]) == 3, "/tasks for an owner: everything")
 opts = [o.value for o in B.TasksView(stranger).children[0].options]
 check(opts == [theirs["id"]], "cancel menu: only theirs")
-check("Only" in B.cancel_reminder(mine["id"], stranger), "can't cancel someone else's")
+check(B.cancel_reminder(mine["id"], stranger).startswith("No reminder") and mine["id"] in B._reminders,
+      "can't cancel someone else's (or tell that it exists)")
 
 print("== voice notes are cut off at the limit while decoding")
 B.VOICE_MAX_SECONDS = 0

@@ -450,7 +450,12 @@ class Telegram:
         return self.core.is_telegram_id(channel_id)
 
     async def get_channel(self, channel_id: int) -> TgChannel:
+        if not self.ready():  # before login a send would fail; core.resolve_channel_patiently waits for us instead
+            raise TgError("Telegram isn't connected yet")
         return TgChannel(self, channel_id)
+
+    def ready(self) -> bool:
+        return bool(self.username) and not self._closed
 
     def where(self, channel_id: int) -> str:
         chat, thread = self.place(channel_id)
@@ -1148,8 +1153,10 @@ class Telegram:
             return
         idx, _, opt = rest.partition(":")
         try:
+            if int(idx) < 0 or (opt not in ("", "m") and not 0 <= int(opt) < len(view.children[int(idx)].options)):
+                raise IndexError
             item = view.children[int(idx)]
-        except (ValueError, IndexError):
+        except (ValueError, IndexError, AttributeError):
             await toast("That button no longer exists.")
             return
         if getattr(item, "disabled", False) or getattr(item, "url", None):  # never shown as tappable
