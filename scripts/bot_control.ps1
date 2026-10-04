@@ -142,9 +142,14 @@ switch ($Action) {
         # password"): an S4U logon has no password, so Windows' per-user encryption (DPAPI) can't open your master
         # key; it makes a new one it can't reopen later and switches your account to it. Chrome then can't decrypt its
         # cookies and signs you out of everything, at every restart (seen on Windows 11 with a Microsoft account).
-        "Starting at boot needs your Windows password (for a Microsoft account, its password, not your PIN)."
+        # Signed in with a Microsoft account: its password is what Windows checks (a PIN never works here), and some
+        # PCs only accept it with the account's own name
+        $msa = whoami /groups /fo csv | ConvertFrom-Csv | Where-Object { $_.'Group Name' -like "MicrosoftAccount\*" } |
+            Select-Object -First 1 -ExpandProperty 'Group Name'
+        "Starting at boot needs your Windows password. A PIN or Windows Hello doesn't work here."
+        if ($msa) { "You sign in with a Microsoft account: use the password of $($msa.Split('\')[1]) (the one for account.microsoft.com)." }
         "Windows stores it encrypted for this task. If you change the password, run 'boot' again."
-        $cred = Get-Credential -UserName $user -Message "Your Windows password, so the bot can start at boot"
+        $cred = Get-Credential -UserName $user -Message "Your Windows password (not your PIN), so the bot can start at boot"
         if (-not $cred) { "Cancelled."; return }
         # ($taskAction, not $action: PowerShell names ignore case, and $Action is this script's validated parameter)
         try {
@@ -152,12 +157,21 @@ switch ($Action) {
             $trigger = New-ScheduledTaskTrigger -AtStartup
             $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
                 -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -Priority 4  # default 7 = below normal
-            Register-ScheduledTask -TaskName $BootTask -Action $taskAction -Trigger $trigger -Settings $settings `
-                -User $user -Password $cred.GetNetworkCredential().Password -RunLevel Limited `
-                -Description "Starts pc-pilot at boot, before anyone signs in. Made by scripts\bot_control.ps1 boot." `
-                -Force -ErrorAction Stop | Out-Null
+            $err = $null
+            foreach ($name in @($user) + @($msa | Where-Object { $_ })) {
+                try {
+                    Register-ScheduledTask -TaskName $BootTask -Action $taskAction -Trigger $trigger -Settings $settings `
+                        -User $name -Password $cred.GetNetworkCredential().Password -RunLevel Limited `
+                        -Description "Starts pc-pilot at boot, before anyone signs in. Made by scripts\bot_control.ps1 boot." `
+                        -Force -ErrorAction Stop | Out-Null
+                    $err = $null
+                    break
+                } catch { $err = $_ }
+            }
+            if ($err) { throw $err }
         } catch {
-            Write-Error "Couldn't register the boot task (wrong password?): $($_.Exception.Message)"
+            Write-Error ("Couldn't register the boot task: $($_.Exception.Message) Use your account password, not your PIN. " +
+                "No password on your account (passwordless sign-in)? Then skip 'boot': the Startup apps entry starts the bot when you sign in.")
             exit 1
         }
         "The bot now starts when Windows boots, as $user, with no sign-in needed. It also starts Ollama if it isn't running."
