@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import csv
 import hashlib
 import io
 import ipaddress
@@ -4871,6 +4872,7 @@ async def core_start() -> None:
     _spawn(idle_unloader())
     _spawn(power_watch())
     _spawn(power_back_on_start())
+    _spawn(boot_task_check())
     if sys.platform == "win32" and "--boot" in sys.argv:
         _spawn(logon_handoff_watch())
     binary = claude_bin()
@@ -5233,20 +5235,30 @@ BOOT_TASK = "pc-pilot (boot)"  # the scheduled task scripts/bot_control.ps1 boot
 _autostart_cache: tuple[float, str | None] = (-1e9, None)
 
 
+# The boot task's last run failed to log on: its stored password is out of date (changed, expired) or refused
+BOOT_LOGON_FAILURES = {-2147023570, -2147023569, -2147023566, -2147023511}  # 0x8007052E/052F/0532/0569
+
+
 def autostart() -> str | None:
-    """How the bot comes back after a restart: "boot" (scheduled task, no sign-in needed), "logon" (Startup apps,
-    once someone signs in) or None."""
+    """How the bot comes back after a restart: "boot" (scheduled task, no sign-in needed), "boot-stale" (that task,
+    but Windows refused its stored password last time, so in practice: once someone signs in, if Startup apps has
+    it), "logon" (Startup apps, once someone signs in) or None."""
     global _autostart_cache
     if time.monotonic() - _autostart_cache[0] < 60:
         return _autostart_cache[1]
     mode = None
     if sys.platform == "win32":
         try:
-            r = subprocess.run(["schtasks", "/query", "/tn", BOOT_TASK, "/fo", "csv", "/nh"], capture_output=True,
+            r = subprocess.run(["schtasks", "/query", "/tn", BOOT_TASK, "/v", "/fo", "csv"], capture_output=True,
                                text=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
             if r.returncode == 0 and "Disabled" not in r.stdout:
                 mode = "boot"
-        except (OSError, subprocess.TimeoutExpired):
+                rows = list(csv.reader(r.stdout.splitlines()))
+                if len(rows) >= 2 and "Last Result" in rows[0]:
+                    last = rows[1][rows[0].index("Last Result")].strip()
+                    if last.lstrip("-").isdigit() and int(last) in BOOT_LOGON_FAILURES:
+                        mode = "boot-stale"
+        except (OSError, subprocess.TimeoutExpired, IndexError):
             pass
     if mode is None and startup_installed():
         mode = "logon"
@@ -5255,6 +5267,9 @@ def autostart() -> str | None:
 
 
 AUTOSTART_TIP = "On the PC, run scripts\\bot_control.ps1 boot as administrator."
+BOOT_STALE_NOTE = ("The boot task's password is out of date (Windows refused it at the last boot; changed or expired "
+                   "password?), so after a restart I'm back only once someone signs in. On the PC, run "
+                   "scripts\\bot_control.ps1 boot as administrator with the current password.")
 
 
 def power_pending() -> dict | None:
@@ -5358,7 +5373,18 @@ async def power_back_on_start() -> None:
     if time.time() - rec.get("at", 0) > 7 * 86400:
         return
     what = _POWER_PAST.get(rec.get("action"), "the restart")
-    await _post_power_notice(rec, f"✅ Back online after {what} (down for about {_dur(time.time() - rec['at'])}).")
+    text = f"✅ Back online after {what} (down for about {_dur(time.time() - rec['at'])})."
+    if rec.get("action") == "restart" and await asyncio.to_thread(autostart) == "boot-stale":
+        text += f"\n⚠️ {BOOT_STALE_NOTE}"
+    await _post_power_notice(rec, text)
+
+
+async def boot_task_check() -> None:
+    """Started at sign-in although a boot task exists: say so if Windows refused the task's password."""
+    if "--boot" in sys.argv or await asyncio.to_thread(autostart) != "boot-stale":
+        return
+    log.warning("%s", BOOT_STALE_NOTE)
+    note_event("warning", BOOT_STALE_NOTE, level="warning")
 
 
 async def power_watch() -> None:
@@ -5431,7 +5457,9 @@ def power_embed(note: str | None = None) -> discord.Embed:
     for em, label, desc in POWER_ACTIONS.values():
         e.add_field(name=f"{em} {label}", value=desc, inline=False)
     mode = autostart()
-    if mode == "logon":
+    if mode == "boot-stale":
+        e.set_footer(text=BOOT_STALE_NOTE)
+    elif mode == "logon":
         e.set_footer(text="After a restart the bot comes back only once someone signs in on the PC. To have it "
                           f"come back at boot: {AUTOSTART_TIP}")
     elif mode is None:
@@ -5498,6 +5526,7 @@ class PowerConfirmView(PowerView):
             if self.action == "restart":
                 text += {"boot": " I'll post here when I'm back, about a minute after Windows starts.",
                          "logon": " I'll post here once someone signs in on the PC.",
+                         "boot-stale": f" ⚠️ {BOOT_STALE_NOTE}",
                          }.get(autostart(), " I don't start on my own, so I'll stay offline until someone starts me.")
         else:
             text = f"{POWER_ACTIONS[self.action][0]} Going to {self.action} in a few seconds. I'll post here when I'm awake."

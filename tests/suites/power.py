@@ -78,7 +78,7 @@ async def main():
 
     print("== what the restart message promises, by how the bot starts")
     for mode, want in (("boot", "about a minute after Windows starts"), ("logon", "once someone signs in"),
-                       (None, "stay offline")):
+                       ("boot-stale", "password is out of date"), (None, "stay offline")):
         B.autostart = lambda mode=mode: mode
         bt = await open_power(tg)
         footer_ok = ("bot_control.ps1 boot" in tg.last_text()) == (mode != "boot")
@@ -102,6 +102,13 @@ async def main():
     await B.power_back_on_start()
     check("Back online after the restart (down for about 1m 4" in tg.last_text() and not B.POWER_FILE.exists(),
           f"posts in the chat that asked: {tg.last_text()!r}")
+    check("password is out of date" not in tg.last_text(), "no password warning while the boot task works")
+    B.autostart = lambda: "boot-stale"
+    B._atomic_write_json(B.POWER_FILE, {"action": "restart", "channel_id": CHAT, "user_id": OWNER, "at": time.time() - 100})
+    await B.power_back_on_start()
+    check("Back online" in tg.last_text() and "password is out of date" in tg.last_text()
+          and "bot_control.ps1 boot" in tg.last_text(), f"back online, with the stale-password warning: {tg.last_text()!r}")
+    B.autostart = lambda: "boot"
 
     print("== sleep, then awake again (same process)")
     bt = await open_power(tg)

@@ -218,6 +218,13 @@ switch ($Action) {
         $task = Get-ScheduledTask -TaskName $BootTask -ErrorAction SilentlyContinue
         "Starts at boot:  " + $(if (-not $task) { "no (run 'boot' as administrator so it comes back after a restart without sign-in)" }
                                 elseif ($task.State -eq "Disabled") { "disabled in Task Scheduler" } else { "yes" })
+        # 0x8007052E wrong password, 0x8007052F account restriction, 0x80070532 password expired, 0x80070569 logon
+        # type not granted (llmbot/core.py BOOT_LOGON_FAILURES)
+        $last = if ($task) { (Get-ScheduledTaskInfo -TaskName $BootTask -ErrorAction SilentlyContinue).LastTaskResult }
+        if ($null -ne $last -and [uint32]$last -in [uint32[]](2147943726, 2147943727, 2147943730, 2147943785)) {
+            Write-Warning ("Windows refused the boot task's password at the last boot (changed or expired?), so the bot " +
+                "didn't start before sign-in. Run 'boot' again as administrator with your current password.")
+        }
         if ($task -and $task.Principal.LogonType -eq "S4U") {
             Write-Warning ("The boot task runs without your password (S4U), which breaks Windows' encryption for your " +
                 "account and signs Chrome out at every restart. Run 'boot' again as administrator to fix it, or 'unboot'.")
