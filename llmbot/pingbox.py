@@ -50,6 +50,16 @@ def draw_badge(c: tk.Canvas, source: str) -> None:
         c.create_text(11, 11, text="M", fill="#111111", font=("Segoe UI", 9, "bold"))
 
 
+MAX_CHARS, MAX_LINES = 600, 12  # the bot refuses longer pings; this keeps the window on the screen regardless
+
+
+def clipped(text: str) -> str:
+    lines = text.splitlines()
+    if len(lines) > MAX_LINES:
+        text = "\n".join(lines[:MAX_LINES]) + " …"
+    return text if len(text) <= MAX_CHARS else text[:MAX_CHARS].rstrip() + " …"
+
+
 def read_pings(pings: queue.Queue) -> None:
     for line in sys.stdin.buffer:  # not the console code page: the bot writes UTF-8
         try:
@@ -119,7 +129,7 @@ def main() -> None:
             badge.pack(side="left", padx=(0, 8), before=head)
         head.configure(text=f"{'' if app else '📨 '}{who} pinged you" + (f" on {app}" if app else "")
                        + (f" ({state['count']} pings)" if state["count"] > 1 else ""))
-        body.configure(text=ping.get("message") or "")
+        body.configure(text=clipped(ping.get("message") or ""))
         if time.monotonic() - state["chimed"] > CHIME_GAP:
             state["chimed"] = time.monotonic()
             chime(root)

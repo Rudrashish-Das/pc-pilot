@@ -86,19 +86,27 @@ async def telegram():
     B.PING_GAP = 0  # the spam guard has its own section below
     await say(GUEST, "/ping")
     check("Usage: /ping" in tg.last_text() and not fake.shown, "no message: usage")
+    await say(GUEST, "/ping " + "a" * (B.PING_MAX_CHARS + 1))
+    check(f"{B.PING_MAX_CHARS + 1} characters" in tg.last_text() and not fake.shown, "too long: refused, not cut")
+    await say(GUEST, "/ping " + "\n".join("x" * (B.PING_MAX_LINES + 1)))
+    check(f"{B.PING_MAX_LINES + 1} lines" in tg.last_text() and not fake.shown, "too many lines: refused")
+    B._ping_times.clear()
     await say(GUEST, "/ping dinner's ready 🍝")
     await settle()
     check(fake.shown == [("Rudra", "dinner's ready 🍝")] and fake.sources == ["telegram"]
           and "on the laptop's screen" in tg.last_text(),
           "shown on the PC; the guest is told")
+    ping_id = tg.sent()[-1]["reply_parameters"]["message_id"]  # the "Sent" note replies to her /ping
     fake.replies.append("on my way")
     await settle()
-    check(tg.sent()[-1]["chat_id"] == GUEST and "on my way" in tg.last_text() and "dinner" in tg.last_text(),
-          "the reply comes back to the guest, quoting the ping")
+    last = tg.sent()[-1]
+    check(last["chat_id"] == GUEST and (last.get("reply_parameters") or {}).get("message_id") == ping_id
+          and "on my way" in last["text"] and "dinner" not in last["text"],
+          "the answer comes back as a reply to her ping (not a quote of it)")
     await say(GUEST, "/ping hello?")
     fake.replies.append("")
     await settle()
-    check("was seen (closed without a reply)" in tg.last_text(), "closed without a reply: seen")
+    check("Seen (closed without a reply)" in tg.last_text(), "closed without a reply: seen")
     fake.screen = "locked"
     await say(GUEST, "/ping are you there")
     check("locked right now" in tg.last_text(), "locked: shows once unlocked")
@@ -241,6 +249,38 @@ async def discord():
     await B.bot.on_message(m)
     check(replies and "/status" in replies[-1] and not prompts, "guest DM: told the two commands, nothing run")
 
+    posts, acks = [], []
+
+    class DM:
+        id = 777
+
+        async def send(self, content=None, **kw):
+            posts.append((content, kw.get("reference")))
+
+    class Ack:
+        def to_reference(self, **kw):
+            return ("ref-to-ack", kw)
+
+    class Follow:
+        async def send(self, content=None, **kw):
+            acks.append((content, kw))
+            return Ack()
+
+    class Resp2:
+        async def defer(self, **kw):
+            acks.append(("defer", kw))
+    B._ping_times.clear()
+    fake.replies.clear()  # left over from the spam guard section
+    i = SimpleNamespace(user=SimpleNamespace(id=DISCORD_GUEST, display_name="Priya"), guild=None, channel=DM(),
+                        response=Resp2(), followup=Follow())
+    await B.ping_cmd.callback(i, "dinner's ready")
+    check(acks[0] == ("defer", {"ephemeral": False, "thinking": True}) and "dinner's ready" in acks[1][0]
+          and acks[1][1].get("ephemeral") is False, "DM: the Sent note is a normal message that shows the ping")
+    fake.replies.append("coming")
+    await settle()
+    check(posts == [("💬 coming", ("ref-to-ack", {"fail_if_not_exists": False}))],
+          "the answer replies to it (and is still sent if it was deleted)")
+
 
 def dialog():
     print("== the dialog process")
@@ -291,6 +331,9 @@ def dialog():
     check(len(seen["badge"]) == 1, "the app's badge (the latest ping's: Telegram)")
     check(seen["buttons"] == ["Close", "Reply"] and seen["enter"], "Reply and Close buttons; Enter sends")
     check(json.loads(out.getvalue()) == {"reply": "on my way"} and exits == [0], "prints the reply, exits at once")
+    from llmbot import pingbox as PB
+    check(PB.clipped("a\n" * 50).count("\n") < PB.MAX_LINES and PB.clipped("b" * 5000).endswith(" …")
+          and PB.clipped("short") == "short", "the window keeps any text to a size that fits the screen")
 
 
 def games():

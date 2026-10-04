@@ -1007,7 +1007,7 @@ class Telegram:
             await out(content="Usage: /ping <message>")
         else:
             name = user.get("first_name") or user.get("username") or str(user["id"])
-            await out(content=await core.ping_pc(chan, user["id"], name, args))
+            await out(content=await core.ping_pc(chan, user["id"], name, args, reply_to=out.reply_to))
 
     def _attachments(self, m: dict) -> tuple[list[TgAttachment], list[str]]:
         found = []

@@ -5522,7 +5522,8 @@ async def power_cmd(inter: discord.Interaction):
 # =============================================================================
 # /status and /ping: for GUEST_IDS (and owners), who can't use anything else
 # =============================================================================
-PING_MAX_CHARS = 1000
+PING_MAX_CHARS = 500  # longer pings are refused (and Discord's box stops at this), not cut
+PING_MAX_LINES = 10
 # Spam guard for guests (owners aren't limited): at most PING_LIMIT pings per PING_WINDOW seconds, PING_GAP apart
 PING_LIMIT = max(int(_env("PING_LIMIT", "5") or 5), 1)
 PING_WINDOW = 600
@@ -5576,12 +5577,18 @@ async def pc_status_text() -> str:
     return "\n".join(lines)
 
 
-async def ping_pc(deliver: Any, user_id: int, sender: str, message: str) -> str:
-    """Pop the message up on the PC's screen; its reply is posted to `deliver` (a channel) later. Returns what to
-    tell the sender now."""
-    message = clip(message.strip(), PING_MAX_CHARS)
+async def ping_pc(deliver: Any, user_id: int, sender: str, message: str, reply_to: Any = None) -> str:
+    """Pop the message up on the PC's screen; its reply is posted to `deliver` (a channel) later, as a reply to
+    `reply_to` (a message, or a function returning one by then) when there is one. Returns what to tell the sender
+    now."""
+    message = re.sub(r"\n\s*\n+", "\n\n", message.strip())  # runs of blank lines: one
     if not message:
         return "Usage: /ping <message>"
+    lines = message.count("\n") + 1
+    if len(message) > PING_MAX_CHARS or lines > PING_MAX_LINES:
+        size = f"{len(message)} characters" if len(message) > PING_MAX_CHARS else f"{lines} lines"
+        return (f"✂️ That's {size}; a ping can be up to {PING_MAX_CHARS} characters and {PING_MAX_LINES} lines. "
+                "Make it shorter and send it again.")
     wait = ping_wait(user_id)
     if wait > 0:
         log.info("Ping from %s refused: spam guard (%.0fs to wait)", user_id, wait)
@@ -5595,13 +5602,13 @@ async def ping_pc(deliver: Any, user_id: int, sender: str, message: str) -> str:
     note_event("ping", f"Ping from {sender}: {clip(message, 200)}", user_id=user_id,
                channel_id=getattr(deliver, "id", None))
     source = "telegram" if is_telegram_id(user_id) else "dashboard" if is_web_id(user_id) else "discord"
-    _spawn(_ping_dialog(deliver, sender, message, source))
+    _spawn(_ping_dialog(deliver, sender, message, source, reply_to))
     where = "added to the window already on the laptop's screen" if added else "it's on the laptop's screen"
     return (f"📨 Sent: {where}" + (" (locked right now, so it shows once it's unlocked)" if screen == "locked" else "")
             + ". The reply comes here.")
 
 
-async def _ping_dialog(deliver: Any, sender: str, message: str, source: str) -> None:
+async def _ping_dialog(deliver: Any, sender: str, message: str, source: str, reply_to: Any = None) -> None:
     try:
         reply = await pcstatus.show_ping(getattr(deliver, "id", id(deliver)), sender, message, source)
         if reply is None:  # a later ping from the same chat got the answer
@@ -5609,17 +5616,21 @@ async def _ping_dialog(deliver: Any, sender: str, message: str, source: str) -> 
     except Exception as e:
         log.error("Ping window failed: %s", oneline(redact(e), 300))
         reply = None
-    quote = f"“{clip(oneline(message), 60)}”"
+    ref = reply_to() if callable(reply_to) else reply_to
+    if ref is not None and hasattr(ref, "to_reference"):  # Discord: still sent if that message is gone
+        ref = ref.to_reference(fail_if_not_exists=False)
+    # As a reply, the ping shows above it; otherwise quote it so it's clear which ping this answers
+    about = "" if ref is not None else f" to “{clip(oneline(message), 60)}”"
     if reply is None:
-        text = f"⚠️ Your ping {quote} couldn't be shown on the laptop."
+        text = f"⚠️ The ping{about} couldn't be shown on the laptop."
     elif reply:
-        text = f"💬 Reply to {quote}:\n{clip(reply, 1800)}"
+        text = f"💬 {clip(reply, 1800)}" if ref is not None else f"💬 Reply{about}:\n{clip(reply, 1800)}"
     else:
-        text = f"👀 Your ping {quote} was seen (closed without a reply)."
+        text = f"👀 Seen{about} (closed without a reply)."
     note_event("ping", "Ping answered" if reply else "Ping closed" if reply == "" else "Ping not shown",
                channel_id=getattr(deliver, "id", None))
     try:
-        await deliver.send(text)
+        await deliver.send(text, reference=ref) if ref is not None else await deliver.send(text)
     except Exception as e:
         log.warning("Ping reply not delivered: %s", oneline(redact(e), 200))
 
@@ -5634,17 +5645,23 @@ async def status_cmd(inter: discord.Interaction):
 
 
 @bot.tree.command(name="ping", description="Pop a message up on the laptop's screen; the reply comes to your DMs")
-@app_commands.describe(message="What to say")
-async def ping_cmd(inter: discord.Interaction, message: str):
+@app_commands.describe(message=f"What to say (up to {PING_MAX_CHARS} characters)")
+async def ping_cmd(inter: discord.Interaction, message: app_commands.Range[str, 1, PING_MAX_CHARS]):
     if not can_check_pc(inter.user.id):
         await inter.response.send_message("⛔ Not available to you.", ephemeral=True)
         return
-    await inter.response.defer(ephemeral=True, thinking=True)
+    dm = inter.guild is None  # in a DM the answer replies to the "Sent" message, which shows the ping
+    await inter.response.defer(ephemeral=not dm, thinking=True)
     try:
-        deliver = inter.channel if inter.guild is None else await inter.user.create_dm()
+        deliver = inter.channel if dm else await inter.user.create_dm()
     except discord.HTTPException:
         deliver = inter.channel
-    await inter.followup.send(await ping_pc(deliver, inter.user.id, inter.user.display_name, message), ephemeral=True)
+    sent: dict = {}
+    ack = await ping_pc(deliver, inter.user.id, inter.user.display_name, message,
+                        reply_to=(lambda: sent.get("msg")) if dm else None)
+    if dm and ack.startswith("📨"):
+        ack = f"📨 “{clip(message, 300)}”\n-# {ack[2:].strip()}"
+    sent["msg"] = await inter.followup.send(ack, ephemeral=not dm, wait=True)
 
 
 # =============================================================================
