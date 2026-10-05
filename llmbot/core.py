@@ -59,6 +59,10 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 log = logging.getLogger("llmbot")
 
+# The bot runs under pythonw (no console), so Windows opens a new console window for every console program it
+# starts (claude, shutdown...) unless told not to: a blank terminal flashing up on screen.
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
 
 def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
@@ -2451,7 +2455,8 @@ async def kill_tree(proc: asyncio.subprocess.Process) -> None:
     try:
         if sys.platform == "win32":
             k = await asyncio.create_subprocess_exec("taskkill", "/PID", str(proc.pid), "/T", "/F",
-                                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                                     creationflags=NO_WINDOW)
             await k.wait()
         else:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -2492,7 +2497,7 @@ async def discover_cc_skills() -> list[str]:
     snap = CCSnap(CC_BACKEND, CC_MODEL, "read", next(iter(WORKSPACES)))
     cmd = [binary, "-p", "--output-format", "stream-json", "--verbose", "--model", "haiku", "--max-turns", "1",
            "--tools", "Skill", "--strict-mcp-config", "--setting-sources", "user"]
-    kw: dict[str, Any] = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32"
+    kw: dict[str, Any] = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | NO_WINDOW} if sys.platform == "win32"
                           else {"start_new_session": True})
     proc = None
     try:
@@ -2575,7 +2580,8 @@ async def _execute(job: CCJob) -> None:
         return
     ws.mkdir(parents=True, exist_ok=True)
     kw: dict[str, Any] = (
-        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32" else {"start_new_session": True}
+        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | NO_WINDOW} if sys.platform == "win32"
+        else {"start_new_session": True}
     )
     job.status, job.started = "running", time.monotonic()
     job.dirty = True
@@ -2855,7 +2861,7 @@ async def check_plan_now() -> str | None:
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                cwd=str(WORKSPACES[snap.workspace]), env=build_cc_env(snap))
+                cwd=str(WORKSPACES[snap.workspace]), env=build_cc_env(snap), creationflags=NO_WINDOW)
             out, _ = await asyncio.wait_for(proc.communicate(b"Reply with just: ok"), 90)
         except asyncio.TimeoutError:
             await kill_tree(proc)
@@ -4878,7 +4884,8 @@ async def core_start() -> None:
     binary = claude_bin()
     if binary:
         try:
-            p = await asyncio.create_subprocess_exec(binary, "--version", stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            p = await asyncio.create_subprocess_exec(binary, "--version", stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                                     creationflags=NO_WINDOW)
             out, _ = await asyncio.wait_for(p.communicate(), 20)
             CLAUDE_VERSION = out.decode().strip().split()[0] if out.strip() else None
         except Exception as e:
@@ -5287,7 +5294,8 @@ def _dur(seconds: float) -> str:
 
 async def _run_cmd(*cmd: str) -> str | None:
     """Run a fixed system command (no shell); None on success, else its message."""
-    p = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    p = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                             creationflags=NO_WINDOW)
     out, _ = await asyncio.wait_for(p.communicate(), 20)
     return None if p.returncode == 0 else (out.decode(errors="replace").strip() or f"exit code {p.returncode}")
 
