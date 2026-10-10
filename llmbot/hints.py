@@ -51,7 +51,7 @@ RULES: list[Rule] = [
          r"Claude Code CLI not found",
          "The Claude Code CLI wasn't found. Install it on the PC (`irm https://claude.ai/install.ps1 | iex`) or "
          "set CLAUDE_BIN in .env to the full path of claude.exe, then restart the bot.", ("claude",)),
-    Rule(r"not logged in|please run /login|/login|invalid api key|authentication_error|oauth token (has )?expired|"
+    Rule(r"not logged in|please run /login|/login|invalid api key|authentication_error|oauth (token|session) (has )?expired|"
          r"invalid x-api-key|(?:HTTP|API Error:?|status(?: code)?:?|error code:?)\s*401\b",
          "Claude Code isn't logged in on the PC. Open a terminal there, run `claude`, log in (/login), quit, then "
          "retry.", ("claude",)),

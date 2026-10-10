@@ -154,7 +154,16 @@ switch ($Action) {
         # ($taskAction, not $action: PowerShell names ignore case, and $Action is this script's validated parameter)
         try {
             $taskAction = New-ScheduledTaskAction -Execute $Pythonw -Argument "-m llmbot --boot" -WorkingDirectory $Dir
-            $trigger = New-ScheduledTaskTrigger -AtStartup
+            # "At startup" only fires on a full boot. With Fast Startup (on by default) shutting down is a half-hibernate
+            # and turning the PC on resumes that kernel, so the task never ran and the bot stayed off until someone
+            # signed in. Kernel-Boot event 27 is written on every boot, Fast Startup ones included (boot type 0x1); on
+            # a full boot both triggers fire and MultipleInstances IgnoreNew keeps it to one bot.
+            $boot27 = New-CimInstance -CimClass (Get-CimClass -ClassName MSFT_TaskEventTrigger `
+                -Namespace Root/Microsoft/Windows/TaskScheduler) -ClientOnly
+            $boot27.Enabled = $true
+            $boot27.Subscription = '<QueryList><Query Id="0" Path="System"><Select Path="System">' +
+                "*[System[Provider[@Name='Microsoft-Windows-Kernel-Boot'] and EventID=27]]</Select></Query></QueryList>"
+            $trigger = @((New-ScheduledTaskTrigger -AtStartup), $boot27)
             $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
                 -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -Priority 4  # default 7 = below normal
             $err = $null
@@ -228,6 +237,10 @@ switch ($Action) {
         if ($task -and $task.Principal.LogonType -eq "S4U") {
             Write-Warning ("The boot task runs without your password (S4U), which breaks Windows' encryption for your " +
                 "account and signs Chrome out at every restart. Run 'boot' again as administrator to fix it, or 'unboot'.")
+        }
+        if ($task -and -not ($task.Triggers | Where-Object { $_.Subscription -like "*Kernel-Boot*" })) {
+            Write-Warning ("The boot task only starts the bot after a full boot, not after a Fast Startup one (turning " +
+                "the PC on after 'Shut down'). Run 'boot' again as administrator to add that.")
         }
     }
     "log" { Get-Content $LogFile -Tail 40 -Wait }

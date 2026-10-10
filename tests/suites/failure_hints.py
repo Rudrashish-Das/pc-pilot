@@ -24,6 +24,7 @@ cases = [  # (error text, where, words the suggestion must contain)
     ("HTTP 500: llama runner process has terminated: exit status 2", "local", ["Restart Ollama"]),
     ("ReadTimeout", "local", ["took too long"]),
     ("Invalid API key · Please run /login", "claude", ["run `claude`", "/login"]),
+    ("Failed to authenticate: OAuth session expired and could not be refreshed", "claude", ["run `claude`", "/login"]),
     ("Credit balance is too low", "claude", ["console.anthropic.com", "Ollama"]),
     ('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', "claude", ["Retry"]),
     ("Claude AI usage limit reached|1790780000", "claude", ["usage limit"]),

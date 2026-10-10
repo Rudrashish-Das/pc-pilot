@@ -3,6 +3,8 @@
 Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `bot_v22.py`). From 0.23.0 on, git history is the record.
 
 ## Unreleased
+- Fixed: with Fast Startup on (Windows' default), the boot task never ran after "Shut down" and turning the PC back on, so the bot stayed off until someone signed in. "At startup" only fires on a full boot. The task now also starts on Kernel-Boot event 27, which Windows writes on every boot. Run `bot_control.ps1 boot` again as administrator to add it; `status` warns while it's missing.
+- "OAuth session expired and could not be refreshed" from Claude Code now comes with the "log in again" hint.
 - Fixed: Chrome signed you out of every site after each restart while `bot_control.ps1 boot` was set up. The boot task logged on without your password (S4U), and Windows' per-user encryption (DPAPI) then made a master key your real session couldn't open, and switched your account to it. Chrome couldn't decrypt or save cookies. `boot` now asks for your Windows password and stores it with the task (run it again after a password change), and `status` warns about an old S4U task. If you had one: `unboot`, sign out, and sign in with your password, not your PIN, once.
   - When Windows refuses the boot task's stored password (changed or expired), the bot says so: `status` warns, the bot logs it and adds it to the dashboard's activity when it starts at sign-in instead, `/power` shows it, and the "back online" message after a restart includes it.
 - 📨 **Guests: `/status` and `/ping`** for someone who should only check on the PC (`GUEST_IDS`, Discord or Telegram ids). Owners can use them too; guests get nothing else.
