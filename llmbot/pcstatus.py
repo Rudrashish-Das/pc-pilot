@@ -144,15 +144,27 @@ def on_since() -> float | None:
 
 def desktop() -> str:
     """'ok' when a dialog from this process shows on the screen, 'locked' when it will once someone unlocks it,
-    'away' when nobody is signed in or the bot runs in Windows' background session (no screen to show it on)."""
+    'away' when nobody is signed in, 'background' when someone is but this copy runs in Windows' background session
+    (started at boot: no screen to show it on until the copy on the desktop takes over, about a minute)."""
     if sys.platform != "win32":
         return "away"
     import ctypes
     k32, wts = ctypes.windll.kernel32, ctypes.windll.wtsapi32
     screen, mine = k32.WTSGetActiveConsoleSessionId(), ctypes.c_ulong()
-    if screen == 0xFFFFFFFF or not k32.ProcessIdToSessionId(os.getpid(), ctypes.byref(mine)) or mine.value != screen:
+    if screen == 0xFFFFFFFF:
         return "away"
     buf, size = ctypes.c_void_p(), ctypes.c_ulong()
+    # WTSUserName (5): empty at the sign-in screen. Asked by session id, so it works from the background session too
+    user = ""
+    if wts.WTSQuerySessionInformationW(None, screen, 5, ctypes.byref(buf), ctypes.byref(size)):
+        try:
+            user = ctypes.wstring_at(buf.value) if buf.value else ""
+        finally:
+            wts.WTSFreeMemory(buf)
+    if not user:
+        return "away"
+    if not k32.ProcessIdToSessionId(os.getpid(), ctypes.byref(mine)) or mine.value != screen:
+        return "background"
     # WTSSessionInfoEx (25): its SessionFlags say whether the session is locked
     if wts.WTSQuerySessionInformationW(None, screen, 25, ctypes.byref(buf), ctypes.byref(size)):
         try:

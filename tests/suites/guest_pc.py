@@ -117,6 +117,10 @@ async def telegram():
     n = len(fake.shown)
     await say(GUEST, "/ping hi")
     check("Nobody is signed in" in tg.last_text() and len(fake.shown) == n, "nobody signed in: not shown")
+    fake.screen = "background"
+    await say(GUEST, "/ping hi")
+    check("just signed in" in tg.last_text() and len(fake.shown) == n, "signed in, bot still in session 0: not shown")
+    check("Nobody is signed in" not in await B.pc_status_text(), "signed in, bot still in session 0: /status says so")
     fake.screen = "ok"
 
     print("== spam guard")

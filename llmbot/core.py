@@ -5634,6 +5634,8 @@ async def ping_pc(deliver: Any, user_id: int, sender: str, message: str, reply_t
     screen = await asyncio.to_thread(pcstatus.desktop)
     if screen == "away":
         return "💤 Nobody is signed in on the laptop right now, so the ping can't pop up there. Try again later."
+    if screen == "background":  # started at boot; the copy on the desktop takes over within about a minute
+        return "⏳ The laptop was just signed in and the bot is still moving onto its screen. Try again in a minute."
     added = pcstatus.WINDOW.is_open()
     _ping_times.setdefault(user_id, []).append(time.monotonic())
     note_event("ping", f"Ping from {sender}: {clip(message, 200)}", user_id=user_id,
