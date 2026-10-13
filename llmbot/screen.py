@@ -38,6 +38,7 @@ QUALITY = {"low": (960, 50), "medium": (1280, 62), "high": (1920, 75)}
 FPS_MAX = 60
 IN_FLIGHT_MAX = 4  # frame requests the page may have outstanding (it uses 2)
 REFRESH = 10.0  # resend the whole frame this often even when little changed (a safety net, ~60 KB)
+STILL_PACE = 0.25  # s between looks at a screen that hasn't changed for a few (GDI captures it all every time)
 
 _pool = ThreadPoolExecutor(1, thread_name_prefix="screen")  # capture objects belong to the thread that made them
 _cap: Any = None  # Capture, used only on _pool
@@ -415,9 +416,24 @@ _proc: Any = None
 _conn: Any = None
 
 
+class _Collect(logging.Handler):
+    """The capture process's log lines, sent back with each reply (it has no log file of its own)."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.INFO)
+        self.lines: list[tuple[int, str]] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.lines.append((record.levelno, record.getMessage()))
+
+
 def _worker_main(conn) -> None:
     """The capture process: requests in, results out, until the bot closes the pipe (or exits)."""
     refs: dict[Any, dict] = {}
+    logs = _Collect()
+    log.addHandler(logs)
+    log.setLevel(logging.INFO)
+    log.propagate = False
     while True:
         try:
             msg = conn.recv()
@@ -426,23 +442,32 @@ def _worker_main(conn) -> None:
         try:
             if msg[0] == "grab":
                 _, sid, mon, width, quality, fresh_only, draw, full = msg
-                out = grab(mon, width, quality, fresh_only, draw, refs.setdefault(sid, {}), full)
-            elif msg[0] == "done":  # a viewer left: its last frame and the capture go
+                out = (*grab(mon, width, quality, fresh_only, draw, refs.setdefault(sid, {}), full),
+                       _cap.how if _cap is not None else "")
+            elif msg[0] == "done":  # a viewer left (or starts over): its last frame goes; the capture too if asked
                 refs.pop(msg[1], None)
-                _reset_capture()
+                if msg[2]:
+                    _reset_capture()
                 out = None
             else:
                 out = None
-            conn.send(("ok", out))
+            reply = ("ok", out, logs.lines)
         except Exception as e:
-            conn.send(("error", f"{type(e).__name__}: {e}"))
+            reply = ("error", f"{type(e).__name__}: {e}", logs.lines)
+        logs.lines = []
+        conn.send(reply)
     _reset_capture()
+
+
+_closing = False  # the bot is stopping: no new capture process
 
 
 def _call(msg: tuple) -> Any:
     """One request to the capture process, starting it if needed (on _pool)."""
     global _proc, _conn
     if _proc is None or not _proc.is_alive():
+        if _closing:
+            raise RuntimeError("the bot is stopping")
         _stop_worker()
         import multiprocessing
 
@@ -453,16 +478,19 @@ def _call(msg: tuple) -> Any:
         child.close()
         _conn = parent
         log.info("Screen capture process started (pid %s)", _proc.pid)
+    wait = WORKER_TIMEOUT if msg[0] == "grab" else 3.0
     try:
         _conn.send(msg)
-        if not _conn.poll(WORKER_TIMEOUT if msg[0] == "grab" else 3):
-            raise TimeoutError(f"no answer in {WORKER_TIMEOUT:.0f} s")
-        status, out = _conn.recv()
+        if not _conn.poll(wait):
+            raise TimeoutError(f"no answer in {wait:.0f} s")
+        status, out, lines = _conn.recv()
     except (EOFError, OSError, TimeoutError) as e:
         log.warning("Screen capture process failed (%s: %s); a new one starts with the next frame",
                     type(e).__name__, e)
         _stop_worker()
         raise RuntimeError(f"the capture process stopped: {e}") from None
+    for level, line in lines:
+        log.log(level, "Capture process: %s", line)
     if status == "error":
         raise RuntimeError(out)
     return out
@@ -486,22 +514,34 @@ def _stop_worker() -> None:
 
 def _capture(sid: Any, ref: dict, mon: dict, width: int, quality: int, fresh_only: bool,
              draw: tuple[int, int, int] | None, full: bool):
-    """grab(), in the capture process (or here when WORKER is off). On _pool."""
+    """grab() and how it captured ("dxgi" / "gdi"), in the capture process (or here when WORKER is off). On _pool."""
     if WORKER:
         return _call(("grab", sid, mon, width, quality, fresh_only, draw, full))
-    return grab(mon, width, quality, fresh_only, draw, ref, full)
+    return (*grab(mon, width, quality, fresh_only, draw, ref, full), _cap.how if _cap is not None else "")
 
 
-def _done(sid: Any) -> None:
-    """A viewer left: drop its last frame and free the capture (on _pool)."""
+def _done(sid: Any, reset: bool) -> None:
+    """Drop a viewer's last frame, and with reset the capture too: when nobody is left (it frees the GPU
+    duplication), or to start over after a failure. Not when another viewer has taken over: it's streaming from it.
+    On _pool."""
     if WORKER:
         if _proc is not None and _proc.is_alive():
             try:
-                _call(("done", sid))
+                _call(("done", sid, reset))
             except RuntimeError:
                 pass
-    else:
+    elif reset:
         _reset_capture()
+
+
+_idle: Any = None  # the timer that stops the capture process once nobody has watched for WORKER_IDLE
+
+
+def _schedule_idle_stop(loop: asyncio.AbstractEventLoop) -> None:
+    global _idle
+    if _idle is not None:
+        _idle.cancel()
+    _idle = loop.call_later(WORKER_IDLE, lambda: loop.run_in_executor(_pool, _stop_if_idle))
 
 
 def _stop_if_idle() -> None:
@@ -510,7 +550,11 @@ def _stop_if_idle() -> None:
 
 
 def shutdown() -> None:
-    """The bot is stopping."""
+    """The bot is stopping: the capture process goes, and a viewer still watching can't start another."""
+    global _closing
+    _closing = True
+    if _idle is not None:
+        _idle.cancel()
     _pool.submit(_stop_worker).result(10)
 
 
@@ -560,7 +604,7 @@ def vk_of(name: str) -> int | None:
 
 def _send(*inputs) -> None:
     arr = (INPUT * len(inputs))(*inputs)
-    ctypes.windll.user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
+    _u32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
 
 
 def _mouse(flags: int, dx: int = 0, dy: int = 0, data: int = 0):
@@ -568,14 +612,14 @@ def _mouse(flags: int, dx: int = 0, dy: int = 0, data: int = 0):
 
 
 def _key(vk: int, up: bool):
-    scan = ctypes.windll.user32.MapVirtualKeyW(vk, 0)
+    scan = _u32.MapVirtualKeyW(vk, 0)
     flags = (KEY_SCANCODE if scan else 0) | (KEY_EXTENDED if vk in EXTENDED else 0) | (KEY_UP if up else 0)
     return INPUT(type=1, u=_INPUTUNION(ki=KEYBDINPUT(0 if scan else vk, scan, flags, 0, 0)))
 
 
 def to_absolute(nx: float, ny: float, mon: dict) -> tuple[int, int]:
     """A point on a monitor as fractions (0..1) -> SendInput's 0..65535 over the whole virtual desktop."""
-    u = ctypes.windll.user32
+    u = _u32
     vx, vy, vw, vh = (u.GetSystemMetrics(i) for i in (76, 77, 78, 79))
     x = mon["left"] + min(max(nx, 0.0), 1.0) * (mon["width"] - 1)
     y = mon["top"] + min(max(ny, 0.0), 1.0) * (mon["height"] - 1)
@@ -688,16 +732,21 @@ def device_name(ua: str) -> str:
 
 def status() -> dict | None:
     """The stream right now, or None: {who (IP), device, since (epoch s), monitor (1-based), monitors, fps, kbps,
-    ms (the PC's time per frame), quality, cursor, audio}."""
+    ms (the PC's time per frame), quality, cursor, audio, capture ("dxgi" / "gdi")}."""
     if _session is None or _viewer is None or _viewer.closed:
         return None
     now = time.monotonic()
     recent = [(t, n, ms) for t, n, ms in _session["sent"] if now - t <= 2.0]
-    return {**{k: v for k, v in _session.items() if k not in ("sent", "st", "ua")},
+    return {**{k: v for k, v in _session.items() if k not in ("sent", "st", "ua", "tab")},
             "monitor": _session["st"]["mon_i"] + 1, "quality": _session["st"]["quality"],
             "cursor": _session["st"]["cursor"], "fps": round(len(recent) / 2, 1),
             "kbps": round(sum(n for _, n, _ in recent) * 8 / 2 / 1000),
             "ms": round(sum(ms for *_, ms in recent) / len(recent), 1) if recent else None}
+
+
+def _session_of(ws) -> dict:
+    """This viewer's _session (an empty one after another viewer took over)."""
+    return _session if _session is not None and _viewer is ws else {}
 
 
 def _monitor_list(mons: list[dict]) -> list[dict]:
@@ -712,7 +761,9 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
     or the whole frame) and ms (the PC's time for it), and one binary message follows: the parts' JPEGs, one after
     another. {status} and {error}.
     Someone else already watching: {busy: status()} and closed, unless ?take=1 (the page's Take over button) or it's
-    the same device coming back (a reload, a dropped Wi-Fi the server hasn't noticed yet)."""
+    the same browser tab coming back (?tab=<its id, kept across reloads>: a reload, or a dropped Wi-Fi the server
+    hasn't noticed yet). Another tab or window, even on the same device, is someone else: two tabs can't keep
+    taking it from each other."""
     global _viewer, _session
     ws = web.WebSocketResponse(heartbeat=20, compress=False, max_msg_size=64 * 1024)
     await ws.prepare(request)
@@ -721,10 +772,10 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
         await ws.send_json({"error": why})
         await ws.close()
         return ws
-    who, ua = request.remote, request.headers.get("User-Agent", "")
+    who, ua, tab = request.remote, request.headers.get("User-Agent", ""), request.query.get("tab", "")[:64]
     device = device_name(ua)
     if _viewer is not None and not _viewer.closed:
-        same = _session is not None and (_session["who"], _session["ua"]) == (who, ua)
+        same = bool(tab) and _session is not None and (_session["who"], _session["tab"]) == (who, tab)
         if request.query.get("take") != "1" and not same:
             await ws.send_json({"busy": status()})
             await ws.close()
@@ -743,12 +794,13 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
     loop = asyncio.get_running_loop()
     sid = id(ws)
     mons = monitors()
-    st = {"quality": "medium", "fps": 30, "mon": mons[0], "mon_i": 0, "cursor": "arrow", "credits": 0, "force": True}
+    st = {"quality": "medium", "fps": 30, "mon": mons[0], "mon_i": 0, "cursor": "arrow", "credits": 0, "force": True,
+          "still": 0}
     sent: deque = deque(maxlen=FPS_MAX * 3)  # (time, bytes, ms) of recent frames, for status()
-    _session = {"who": who, "ua": ua, "device": device, "since": time.time(), "monitors": len(mons), "st": st,
-                "sent": sent, "audio": False}
+    _session = {"who": who, "ua": ua, "tab": tab, "device": device, "since": time.time(), "monitors": len(mons),
+                "st": st, "sent": sent, "audio": False, "capture": ""}
     inp = Input(st["mon"])
-    wake = asyncio.Event()
+    wake, poke = asyncio.Event(), asyncio.Event()  # poke: input arrived, so look again now
     await ws.send_json({"monitors": _monitor_list(mons), "monitor": 0})
 
     async def frames() -> None:
@@ -767,7 +819,7 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
             redraw = real and ptr != last_ptr  # the drawn pointer moved or changed shape
             full = st["force"] or time.monotonic() - last_full > REFRESH
             try:
-                parts, w, h, size, ms = await loop.run_in_executor(
+                parts, w, h, size, ms, how = await loop.run_in_executor(
                     _pool, _capture, sid, ref, mon, width, quality, not (full or redraw),
                     ptr if real and pos is not None else None, full)
             except Exception as e:  # locked, UAC prompt, display mode change
@@ -777,12 +829,18 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
                                                   "display changing). Retrying…"})
                 failing = True
                 ref.clear()
-                await loop.run_in_executor(_pool, _done, sid)  # start over: a new capture, then a whole frame
+                await loop.run_in_executor(_pool, _done, sid, True)  # start over: a new capture, a whole frame
                 await asyncio.sleep(1)
                 continue
             if failing:
                 failing = False
                 await ws.send_json({"status": ""})
+            if how and how != _session_of(ws).get("capture"):
+                log.info("Screen capture: %s", {"dxgi": "GPU (DXGI)", "gdi": "GDI (slower)"}.get(how, how))
+                _session_of(ws)["capture"] = how
+            # [] = compared and unchanged (GDI, or a forced look): after a few, look less often. DXGI says "nothing
+            # new" (None) almost for free, but GDI captures the whole screen every time. Input resets it.
+            st["still"] = st["still"] + 1 if parts == [] else 0
             if parts is not None:
                 last_ptr = ptr
                 if full:
@@ -801,7 +859,15 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
                     data = b"".join(j for *_, j in parts)
                     await ws.send_bytes(data)
                     sent.append((time.monotonic(), len(data), ms))
-            await asyncio.sleep(max(0.0, 1 / st["fps"] - (time.monotonic() - t0)))
+            pace = 1 / st["fps"] if st["still"] < 3 else max(1 / st["fps"], STILL_PACE)
+            if st["still"] >= 3:
+                try:  # until the pace is up, or the page sends input (something will change)
+                    await asyncio.wait_for(poke.wait(), max(0.0, pace - (time.monotonic() - t0)))
+                except asyncio.TimeoutError:
+                    pass
+                poke.clear()
+            else:
+                await asyncio.sleep(max(0.0, pace - (time.monotonic() - t0)))
 
     async def frames_or_close() -> None:
         try:
@@ -843,6 +909,8 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
                     await ws.send_json({"monitors": _monitor_list(mons), "monitor": i})
                 st["force"] = True  # re-send now with the new settings, even if the screen is still
             else:
+                st["still"] = 0
+                poke.set()
                 try:
                     inp.handle(m)
                 except (TypeError, ValueError) as e:
@@ -854,10 +922,12 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
         except (asyncio.CancelledError, Exception):
             pass
         inp.release()
-        await loop.run_in_executor(_pool, _done, sid)  # its last frame, and the capture (GPU duplication, buffers)
-        if _viewer is ws:
+        last = _viewer is ws  # not when another viewer took over: it's streaming from the same capture
+        if last:
             _viewer = _session = None
-            loop.call_later(WORKER_IDLE, lambda: loop.run_in_executor(_pool, _stop_if_idle))
+        await loop.run_in_executor(_pool, _done, sid, last)  # its last frame; the capture when nobody's left
+        if last:
+            _schedule_idle_stop(loop)
         minutes = (time.monotonic() - started) / 60
         core.note_event("bot", f"Screen control closed ({device}, {who}, {minutes:.0f} min)")
         log.info("Screen control closed (%s, %s, %.1f min)", device, who, minutes)
@@ -905,8 +975,10 @@ def _record(loop: asyncio.AbstractEventLoop, put, stop: threading.Event, failed:
 
 
 def _is_viewer(request: web.Request) -> bool:
-    return (_session is not None and _viewer is not None and not _viewer.closed
-            and (_session["who"], _session["ua"]) == (request.remote, request.headers.get("User-Agent", "")))
+    """The request comes from the tab that's watching the screen (?tab=, as the screen's own WebSocket)."""
+    tab = request.query.get("tab", "")[:64]
+    return (bool(tab) and _session is not None and _viewer is not None and not _viewer.closed
+            and (_session["who"], _session["tab"]) == (request.remote, tab))
 
 
 async def serve_audio(request: web.Request, core) -> web.WebSocketResponse:
@@ -923,7 +995,7 @@ async def serve_audio(request: web.Request, core) -> web.WebSocketResponse:
             why = (f"Sound isn't available: {type(e).__name__}: {e}. Run  pip install -r requirements.txt  and "
                    "restart the bot.")
     if not why and not _is_viewer(request):
-        why = "Open the Screen tab on this device first: sound goes to the device that's watching."
+        why = "Open the Screen tab here first: sound goes to the tab that's watching."
     if why:
         await ws.send_json({"error": why})
         await ws.close()

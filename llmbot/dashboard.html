@@ -654,7 +654,8 @@ function renderNow() {
       h("span", {}, "Now"), h("span", {}, `${sl.fps} fps · ${(sl.kbps / 1000).toFixed(1)} Mbit/s` + (sl.ms != null ? ` · PC ${Math.round(sl.ms)} ms/frame` : "")),
       h("span", {}, "Quality"), h("span", {}, sl.quality),
       h("span", {}, "Pointer"), h("span", {}, { arrow: "arrow", real: "real pointer", both: "both" }[sl.cursor] || sl.cursor),
-      h("span", {}, "Sound"), h("span", {}, sl.audio ? "on" : "off")),
+      h("span", {}, "Sound"), h("span", {}, sl.audio ? "on" : "off"),
+      h("span", {}, "Capture"), h("span", {}, { dxgi: "GPU (DXGI)", gdi: "GDI (slower fallback)" }[sl.capture] || "starting…")),
     h("div", { class: "small muted", style: "margin-top:8px" }, "Only one device can watch at a time; another one can take over from its Screen tab.")
   ] : h("div", { class: "empty" }, "Not streaming. Open the Screen tab to see and control the PC from here."));
   // spend
@@ -1295,10 +1296,20 @@ window.addEventListener("resize", sizeChat);
 // Touch mode: tap = click there, drag = drag, long press = right click. Trackpad mode: drag moves the pointer, tap =
 // click, tap then touch again and hold = the button held (drag with it, or lift at once for a double click). Both: two fingers = scroll, two-finger tap = right click. A mouse on a PC browser works as itself.
 const SCR_KEYS = "Esc Enter Space Left Up Down Right";
+// This tab's id for the Screen tab: kept across reloads (sessionStorage), different in another tab or window.
+const SCR_TAB = (() => {
+  let id = null;
+  try { id = sessionStorage.getItem("scr-tab"); } catch (e) {}
+  if (!id) {
+    id = Math.random().toString(36).slice(2, 12);
+    try { sessionStorage.setItem("scr-tab", id); } catch (e) {}
+  }
+  return id;
+})();
 const TAP_WAIT = 280;  // ms a trackpad tap's click waits for a second touch (tap-and-drag), as laptop trackpads do
 const KEY_LABEL = { esc: "Esc", escape: "Esc", enter: "⏎", space: "Space", left: "←", up: "↑", down: "↓", right: "→",
   backspace: "⌫", tab: "Tab" };
-const SC = { bytes: 0, pcMs: 0, drawMs: 0, head: null, chain: Promise.resolve(), ws: null, mode: "touch", quality: "medium", fps: 30, cur: "arrow", mon: 0, keys: null, size: [16, 9], cursor: null, retry: 0,
+const SC = { peek: false, bytes: 0, pcMs: 0, drawMs: 0, head: null, chain: Promise.resolve(), ws: null, mode: "touch", quality: "medium", fps: 30, cur: "arrow", mon: 0, keys: null, size: [16, 9], cursor: null, retry: 0,
   timer: null, fatal: false, hold: false, pts: new Map(), g: null, typed: "", frames: 0, fpsAt: 0, lock: null };
 try {
   SC.mode = localStorage.getItem("scr-mode") === "trackpad" ? "trackpad" : "touch";
@@ -1331,7 +1342,10 @@ function scrConnect(take) {
   clearTimeout(SC.timer);
   SC.fatal = false;
   if ($("scr-busy").classList.contains("hide")) scrMsg("Connecting…", true);
-  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/screen" + (take ? "?take=1" : ""));
+  // tab: this tab's id, so a reload reconnects at once; left out while another tab or device has taken over (only
+  // asking whether the screen is free), so two tabs can't keep taking it from each other
+  const q = take ? `?take=1&tab=${SCR_TAB}` : SC.peek ? "" : `?tab=${SCR_TAB}`;
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/screen" + q);
   SC.ws = ws;
   ws.onopen = () => {
     SC.retry = 0;
@@ -1352,10 +1366,10 @@ function scrConnect(take) {
         SC.timer = setTimeout(() => scrConnect(), 5000);
         return;
       }
-      if (m.taken) { SC.fatal = true; scrBusy(h("div", {}, m.error), "Take back"); SC.timer = setTimeout(() => scrConnect(), 5000); return; }
+      if (m.taken) { SC.fatal = true; SC.peek = true; scrBusy(h("div", {}, m.error), "Take back"); SC.timer = setTimeout(() => scrConnect(), 5000); return; }
       if (m.error) { SC.fatal = true; scrMsg(m.error, true); return; }
       if ("status" in m) { scrMsg(m.status, !!m.status); return; }
-      if (m.monitors) { scrMonitors(m.monitors, m.monitor); if (AU.on && !AU.ws) auStart(); return; }
+      if (m.monitors) { SC.peek = false; scrMonitors(m.monitors, m.monitor); if (AU.on && !AU.ws) auStart(); return; }
       if (m.screen) SC.size = m.screen;
       SC.cursor = m.cursor;
       scrCursor();
@@ -1661,7 +1675,7 @@ function auButton(state) {
 function auStart() {
   if (AU.ws || !SC.ws) return;
   if (AU.ctx && AU.ctx.state !== "running") AU.ctx.resume().catch(() => {});  // suspended while the page was hidden
-  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/screen/audio");
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/screen/audio?tab=" + SCR_TAB);
   ws.binaryType = "arraybuffer";
   AU.ws = ws;
   ws.onmessage = (e) => {

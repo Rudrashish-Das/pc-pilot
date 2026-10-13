@@ -718,26 +718,30 @@ def screen_status() -> dict | None:
     return mod.status() if mod else None
 
 
-async def screen_ws(request: web.Request) -> web.StreamResponse:
-    """The Screen tab's stream and input (llmbot/screen.py). Same-origin only: a WebSocket isn't covered by CORS."""
+def _screen_refused(request: web.Request) -> web.Response | None:
+    """The Screen tab's WebSockets: signed in, and same-origin only (a WebSocket isn't covered by CORS)."""
     if not _authed(request):
         return web.json_response({"error": "not signed in"}, status=401)
     origin = request.headers.get("Origin")
     if origin and urlsplit(origin).netloc != request.host:
         return web.json_response({"error": "cross-site request refused"}, status=403)
-    from llmbot import screen
+    return None
+
+
+async def screen_ws(request: web.Request) -> web.StreamResponse:
+    """The Screen tab's stream and input (llmbot/screen.py)."""
+    if refused := _screen_refused(request):
+        return refused
+    from llmbot import screen  # only loaded once someone signed in opens the tab
 
     return await screen.serve(request, core)
 
 
 async def screen_audio_ws(request: web.Request) -> web.StreamResponse:
     """The Screen tab's sound, for the device that's watching (llmbot/screen.py)."""
-    if not _authed(request):
-        return web.json_response({"error": "not signed in"}, status=401)
-    origin = request.headers.get("Origin")
-    if origin and urlsplit(origin).netloc != request.host:
-        return web.json_response({"error": "cross-site request refused"}, status=403)
-    from llmbot import screen
+    if refused := _screen_refused(request):
+        return refused
+    from llmbot import screen  # only loaded once someone signed in opens the tab
 
     return await screen.serve_audio(request, core)
 

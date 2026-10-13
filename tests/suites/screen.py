@@ -197,10 +197,10 @@ async def main():
         mon = SCR.monitors()[0]
         ref = {}
         t0 = time.monotonic()
-        parts, w, h, size, ms = SCR._call(("grab", 1, mon, 960, 50, False, None, True))
+        parts, w, h, size, ms, how = SCR._call(("grab", 1, mon, 960, 50, False, None, True))
         first = time.monotonic() - t0
-        check(parts and parts[0][4][:2] == b"\xff\xd8" and SCR._proc.is_alive(),
-              f"a frame from the capture process (started in {first:.1f} s)")
+        check(parts and parts[0][4][:2] == b"\xff\xd8" and SCR._proc.is_alive() and how in ("dxgi", "gdi"),
+              f"a frame from the capture process via {how} (started in {first:.1f} s)")
         times = []
         for _ in range(20):
             t0 = time.monotonic()
@@ -216,10 +216,39 @@ async def main():
             check("stopped" in str(e) and SCR._proc is None, f"a dead process is noticed ({e})")
         parts, *_ = SCR._call(("grab", 1, mon, 960, 50, False, None, True))
         check(parts and SCR._proc.pid != pid, "and the next frame starts a fresh one")
-        SCR._call(("done", 1))
+        import logging
+
+        class Lines(logging.Handler):
+            def __init__(self):
+                super().__init__()
+                self.got = []
+
+            def emit(self, record):
+                self.got.append(record.getMessage())
+
+        lines = Lines()
+        SCR.log.addHandler(lines)
+        level = SCR.log.level
+        SCR.log.setLevel(logging.INFO)  # the bot logs at INFO; the tests' default is WARNING
+        odd = {"left": 0, "top": 0, "width": 100, "height": 100, "primary": False}  # no GPU output is exactly this
+        *_, how = SCR._call(("grab", 2, odd, 960, 50, False, None, True))
+        SCR.log.removeHandler(lines)
+        SCR.log.setLevel(level)
+        check(how == "gdi" and any(x.startswith("Capture process: Screen: DXGI capture not available") for x in lines.got),
+              f"the capture process's log lines reach the bot's log: {lines.got[:1]}")
+        SCR._call(("done", 2, False))
+        SCR._call(("done", 1, True))
         pid = SCR._proc.pid
+        SCR._closing = True  # the bot is stopping
         SCR._stop_worker()
         check(not psutil.pid_exists(pid) and SCR._proc is None, "stopped: the process is gone")
+        try:
+            SCR._call(("grab", 1, mon, 960, 50, False, None, True))
+            check(False, "no new capture process while the bot stops")
+        except RuntimeError as e:
+            check("stopping" in str(e) and SCR._proc is None, "a viewer still watching while the bot stops can't "
+                  "start a new capture process")
+        SCR._closing = False
     except AssertionError:
         raise
     except Exception as e:  # CI without a desktop
@@ -232,6 +261,8 @@ async def main():
 
     def fake_grab(mon, width, quality, fresh_only, draw, ref, full):
         G["calls"].append((mon, fresh_only, draw, full))
+        if G.get("gdi_still") and not full:
+            return [], mon["width"], mon["height"], (640, 360), 30.0
         if G["static"] and fresh_only and not full:
             return None, mon["width"], mon["height"], (0, 0), 0.0
         G["n"] += 1
@@ -353,6 +384,23 @@ async def main():
         check(live and live["device"] == "Android phone · Chrome" and live["who"] == "127.0.0.1" and live["fps"] > 0
               and live["kbps"] >= 0 and live["monitor"] == 1 and live["monitors"] == 2 and live["cursor"] == "arrow",
               f"status while streaming: {live}")
+        G["gdi_still"] = True  # GDI on a still screen: compared, nothing changed ([]), every time
+        await ws.send_json({"t": "opts", "fps": 30})  # (a forced whole frame first)
+        for _ in range(3):  # requests outstanding, as a page keeps them
+            await ws.send_json({"t": "next"})
+        await asyncio.sleep(0.5)
+        n0 = len(G["calls"])
+        await asyncio.sleep(1)
+        looks = len(G["calls"]) - n0
+        check(2 <= looks <= 6, f"GDI, still screen: it looks a few times a second, not 30 ({looks} in 1 s)")
+        n0, t0 = len(G["calls"]), time.monotonic()
+        await ws.send_json({"t": "move", "x": 0.5, "y": 0.5})
+        while len(G["calls"]) == n0 and time.monotonic() - t0 < 1:
+            await asyncio.sleep(0.005)
+        check(time.monotonic() - t0 < 0.1, f"input: it looks again at once ({(time.monotonic() - t0) * 1000:.0f} ms)")
+        G["gdi_still"] = False
+        while await quiet(ws, 0.2) is not None:
+            pass
         await ws.send_json({"t": "key", "k": "Space", "a": "down"})
         await asyncio.sleep(0.1)
         kinds()
@@ -364,7 +412,10 @@ async def main():
         await ws.send_json({"t": "next"})
         check(await quiet(ws) is not None and not kinds(), "the first keeps streaming, Space still held")
 
-        ws2 = await s.ws_connect(url + "?take=1", headers={**auth, "User-Agent": LAPTOP})
+        resets = []
+        real_reset = SCR._reset_capture
+        SCR._reset_capture = lambda: resets.append(1)
+        ws2 = await s.ws_connect(url + "?take=1&tab=L", headers={**auth, "User-Agent": LAPTOP})
         while True:  # past the frames still on their way
             raw = await with_timeout(ws.receive())
             if raw.type == aiohttp.WSMsgType.TEXT and "error" in (msg := raw.json()):
@@ -375,27 +426,40 @@ async def main():
         k = kinds()
         check(any(x[0] == "key" and x[3] & SCR.KEY_UP for x in k), "the first viewer's held Space was let go")
         check(D.screen_status()["device"] == "Windows PC · Edge", "status follows the new viewer")
-        ws3 = await s.ws_connect(url, headers={**auth, "User-Agent": LAPTOP})
+        check(not resets, "the replaced viewer leaving doesn't reset the capture the new one streams from")
+        other = await s.ws_connect(url + "?tab=M", headers={**auth, "User-Agent": LAPTOP})
+        m = await with_timeout(other.receive_json())
+        check("busy" in m and D.screen_status()["device"] == "Windows PC · Edge",
+              "another tab of the same browser is told it's busy: two tabs can't keep taking it from each other")
+        ws3 = await s.ws_connect(url + "?tab=L", headers={**auth, "User-Agent": LAPTOP})
         while True:
             raw = await with_timeout(ws2.receive())
             if raw.type == aiohttp.WSMsgType.TEXT and "error" in (msg := raw.json()):
                 break
-        check(msg["error"] == "This device was disconnected.", "the same device reconnecting (a reload) needn't ask")
+        check(msg["error"] == "This device was disconnected.", "the same tab reconnecting (a reload) needn't ask")
         await ws3.close()
         await asyncio.sleep(0.2)
         check(D.screen_status() is None, "closed: no status")
+        check(len(resets) == 1, f"the last viewer leaving frees the capture ({len(resets)})")
+        SCR._reset_capture = real_reset
+        first_timer = SCR._idle
+        SCR._schedule_idle_stop(asyncio.get_running_loop())
+        check(first_timer is not None and first_timer.cancelled() and not SCR._idle.cancelled(),
+              "one idle timer: a new one replaces the old (an earlier viewer's can't stop the process early)")
+        SCR._idle.cancel()
 
         # A phone that dropped off the Wi-Fi: connected, then silent (a raw socket: aiohttp's client would answer)
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         lines = ["GET /api/screen HTTP/1.1", f"Host: 127.0.0.1:{port}", "Upgrade: websocket", "Connection: Upgrade",
                  "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Version: 13",
                  f"Authorization: Bearer {D._key}", f"User-Agent: {PHONE}", "", ""]
+        lines[0] = "GET /api/screen?tab=S HTTP/1.1"
         writer.write("\r\n".join(lines).encode())
         await writer.drain()
         check(b" 101 " in await with_timeout(reader.readline()), "(a silent viewer connected)")
         await asyncio.sleep(0.2)
         t0 = asyncio.get_running_loop().time()
-        ws5 = await s.ws_connect(url, headers={**auth, "User-Agent": PHONE})
+        ws5 = await s.ws_connect(url + "?tab=S", headers={**auth, "User-Agent": PHONE})
         await with_timeout(ws5.receive_json())
         head, body = await frame(ws5)
         waited = asyncio.get_running_loop().time() - t0
@@ -428,18 +492,19 @@ async def main():
 
         SCR._record = fake_record
         aurl = url + "/audio"
-        a = await s.ws_connect(aurl, headers={**auth, "User-Agent": PHONE})
+        a = await s.ws_connect(aurl + "?tab=V", headers={**auth, "User-Agent": PHONE})
         msg = await with_timeout(a.receive_json())
         check("Open the Screen tab" in msg["error"], "nobody watching: no sound")
-        v = await s.ws_connect(url, headers={**auth, "User-Agent": PHONE})
+        v = await s.ws_connect(url + "?tab=V", headers={**auth, "User-Agent": PHONE})
         await with_timeout(v.receive_json())
-        a = await s.ws_connect(aurl, headers={**auth, "User-Agent": LAPTOP})
-        msg = await with_timeout(a.receive_json())
-        check("Open the Screen tab" in msg["error"], "another device can't listen in")
-        a = await s.ws_connect(aurl, headers={**auth, "User-Agent": PHONE})
+        for q, ua, what in [("?tab=X", PHONE, "another tab"), ("", PHONE, "no tab"), ("?tab=X", LAPTOP, "another device")]:
+            a = await s.ws_connect(aurl + q, headers={**auth, "User-Agent": ua})
+            msg = await with_timeout(a.receive_json())
+            check("Open the Screen tab" in msg["error"], f"{what} can't listen in")
+        a = await s.ws_connect(aurl + "?tab=V", headers={**auth, "User-Agent": PHONE})
         check(await with_timeout(a.receive_json()) == {"rate": 48000, "channels": 2}
               and len(await with_timeout(a.receive_bytes())) == 3840, "the watching device gets the sound")
-        check(D.screen_status()["audio"] is True, "status: sound on")
+        check(D.screen_status()["audio"] is True and "tab" not in D.screen_status(), "status: sound on (no tab id)")
         await v.close()
         while (await with_timeout(a.receive())).type not in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED):
             pass
