@@ -3,6 +3,7 @@
 Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `bot_v22.py`). From 0.23.0 on, git history is the record.
 
 ## Unreleased
+- Fixed: `/status` could name a game in lowercase ("valorant") when an anti-cheat hides its path and its file can't be read: Windows' list of games was kept lowercased, so the name came from the lowercased folder. The test for it only passed on a PC with VALORANT installed, which is why CI failed on every push since 0.25.0.
 - 🎮 **Dashboard Screen tab**: the PC's screen on your phone, controlled by touch, for casual games and quick remote control over the same Wi-Fi.
   - Touch mode: tap clicks there, drag drags, long press right-clicks. Trackpad mode: drag moves the pointer, tap clicks. Tap, then touch again and hold: the button stays down while your finger does (drag a window by its title bar, or lift at once for a double click), as on a laptop's trackpad; like one, a tap's click waits ~0.3 s for that second touch. Two fingers scroll; a two-finger tap right-clicks. ✊ Hold keeps the left button down. A mouse on a PC browser works as itself.
   - ⌨️ types with the phone's keyboard. The key bar is yours to choose (✎): any letters, Esc, Enter, arrows, F-keys, combinations like Alt+Tab, held down as long as your finger is on them, so walking with arrows or WASD works.
