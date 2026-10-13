@@ -38,7 +38,7 @@ llmbot = "llmbot.core:main"
 packages = ["llmbot"]
 
 [tool.setuptools.package-data]
-llmbot = ["*.html", "*.png"]
+llmbot = ["*.html", "*.png", "*.mp4"]
 
 [tool.setuptools.dynamic]
 version = { attr = "llmbot.__version__" }

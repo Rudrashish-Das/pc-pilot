@@ -111,12 +111,69 @@ async def main():
     SCR.draw_pointer(edge, MON0, (arrow, -40, -40))
     check(True, "half off the edge, or off it entirely: no error")
 
+    print("== only what changed")
+    import numpy as np
+    a = np.zeros((720, 1280, 3), np.uint8)
+    b = a.copy()
+    check(SCR.changed_rects(a, b) == [], "nothing changed: nothing to send")
+    b[10, 10, 2] = 1
+    b[100:300, 200:330] = 9
+    b[715, 1279] = 3
+    check(SCR.changed_rects(a, b) == [(0, 0, 64, 64), (192, 64, 192, 256), (1216, 704, 64, 16)],
+          "one pixel = one tile; a block = one rectangle of tiles; the edge tile clipped")
+    odd = np.zeros((601, 957, 3), np.uint8)
+    odd2 = odd.copy()
+    odd2[600, 956] = 1
+    check(SCR.changed_rects(odd, odd2) == [(896, 576, 61, 25)], "odd sizes (no 8-byte rows): the slow path agrees")
+
+    # A page's picture rebuilt from what grab() sends (whole frames, then tiles drawn over) stays the real one
+    import io, random
+    from PIL import Image as PILImage
+
+    class FakeCap:
+        def __init__(self, mon):
+            self.mon, self.how, self.img = mon, "fake", None
+
+        def image(self, fresh_only):
+            return self.img.copy()
+
+        def close(self):
+            pass
+
+    rng = random.Random(7)
+    mon = {"left": 0, "top": 0, "width": 1280, "height": 720, "primary": True}
+    SCR._cap = FakeCap(mon)
+    src = np.zeros((720, 1280, 3), np.uint8)
+    src[:] = np.linspace(0, 255, 1280, dtype=np.uint8)[None, :, None]  # a gradient: wrong placement would show
+    page, ref, sizes = None, {}, []
+    for step in range(40):
+        for _ in range(rng.randint(0, 4)):  # a few things move
+            y, x = rng.randrange(0, 700), rng.randrange(0, 1260)
+            src[y:y + rng.randint(1, 120), x:x + rng.randint(1, 200)] = rng.randrange(256)
+        SCR._cap.img = PILImage.fromarray(src)
+        parts, *_ = SCR.grab(mon, 1280, 90, False, None, ref, step == 0)
+        for x, y, w, h, jpeg in parts or []:
+            tile = np.asarray(PILImage.open(io.BytesIO(jpeg)).convert("RGB"))
+            page = tile.copy() if page is None else page
+            page[y:y + h, x:x + w] = tile
+        sizes.append(sum(len(p[4]) for p in parts or []))
+    err = np.abs(page.astype(int) - src.astype(int)).mean()
+    check(err < 2, f"the page's picture rebuilt from tiles matches the screen (mean error {err:.2f} of 255)")
+    check(sum(sizes[1:]) / 39 < sizes[0] / 3, f"tiles are much smaller than whole frames ({sizes[0] // 1024} KB "
+          f"whole, {sum(sizes[1:]) // 39 // 1024} KB on average after)")
+    SCR._cap = None
+
     print("== capturing the real screens")
     try:
         for i, mon in enumerate(SCR.monitors()):
-            jpeg, w, h = SCR.grab(mon, 960, 50, False, SCR.pointer())
-            assert jpeg[:2] == b"\xff\xd8" and (w, h) == (mon["width"], mon["height"]), mon
-            print(f"  ok screen {i + 1}: {w}x{h} via {SCR._cap.how}, {len(jpeg) // 1024} KB")
+            ref = {}
+            parts, w, h, size, ms = SCR.grab(mon, 960, 50, False, SCR.pointer(), ref, True)
+            assert len(parts) == 1 and parts[0][4][:2] == b"\xff\xd8" and parts[0][2:4] == size, parts[0][:4]
+            assert (w, h) == (mon["width"], mon["height"]), mon
+            print(f"  ok screen {i + 1}: {w}x{h} via {SCR._cap.how}, {len(parts[0][4]) // 1024} KB in {ms:.0f} ms")
+            again, *_ = SCR.grab(mon, 960, 50, False, None, ref, False)
+            print(f"  ok   then only what changed: {sum(len(p[4]) for p in again or []) // 1024} KB in "
+                  f"{len(again or [])} part(s)")
         SCR._reset_capture()
         cap = SCR.Capture(SCR.monitors()[0])
         if cap.image(False) is not None and cap.how == "dxgi":
@@ -129,24 +186,29 @@ async def main():
             cap.dxgi_at = 0  # as if DXGI_RETRY had passed
             check(cap.image(False) is not None and cap.how == "dxgi", "and back on the GPU capture later")
         cap.close()
+    except AssertionError:
+        raise
     except Exception as e:  # e.g. CI without a desktop: the WebSocket checks below use a stand-in
         print(f"  (skipped: {type(e).__name__}: {e})")
 
     print("== WebSocket")
     G = {"static": False, "n": 0, "calls": []}
 
-    def fake_grab(mon, width, quality, fresh_only, draw):
-        G["calls"].append((mon, fresh_only, draw))
-        if G["static"] and fresh_only:
-            return None, mon["width"], mon["height"]
+    def fake_grab(mon, width, quality, fresh_only, draw, ref, full):
+        G["calls"].append((mon, fresh_only, draw, full))
+        if G["static"] and fresh_only and not full:
+            return None, mon["width"], mon["height"], (0, 0), 0.0
         G["n"] += 1
-        return f"F{G['n']}".encode(), mon["width"], mon["height"]
+        body = f"F{G['n']}".encode()
+        if full or G["n"] % 2:  # the whole frame, or (every other one) two changed tiles
+            return [(0, 0, 640, 360, body)], mon["width"], mon["height"], (640, 360), 4.0
+        return ([(0, 0, 64, 64, body), (128, 64, 64, 64, b"T")], mon["width"], mon["height"], (640, 360), 2.0)
 
     PTR = [(7, 480, 810)]
     SCR.grab = fake_grab
     SCR.monitors = lambda: [MON0, MON1]
     SCR.pointer = lambda: PTR[0]
-    SCR.KEEPALIVE = 60
+    SCR.REFRESH = 60
     B.DASHBOARD_SCREEN = True
     D.core, D._key = B, "k" * 24
     runner = web.AppRunner(D.make_app())
@@ -193,8 +255,13 @@ async def main():
                     "monitor": 0}, "the screens are listed first")
         check(await quiet(ws) is None, "no frame until the page asks")
         head, body = await frame(ws)
-        check(head == {"screen": [1920, 1080], "cursor": list(SCR.on_monitor(PTR[0], MON0)), "frame": True} and body == b"F1"
-              and G["calls"][-1][2] is None, "arrow mode: frame, pointer as a position, not drawn in")
+        check(head == {"screen": [1920, 1080], "cursor": list(SCR.on_monitor(PTR[0], MON0)), "frame": True,
+                       "size": [640, 360], "parts": [[0, 0, 640, 360, 2]], "ms": 4.0} and body == b"F1"
+              and G["calls"][-1][2] is None and G["calls"][-1][3] is True,
+              "first frame: the whole picture; arrow mode: pointer as a position, not drawn in")
+        head, body = await frame(ws)
+        check(head["parts"] == [[0, 0, 64, 64, 2], [128, 64, 64, 64, 1]] and body == b"F2T" and G["calls"][-1][3] is False,
+              "then only what changed: each tile's place and length, their JPEGs in one message")
         G["static"] = True
         await ws.send_json({"t": "next"})
         check(await quiet(ws) is None, "still screen, still pointer: nothing sent")

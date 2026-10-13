@@ -12,6 +12,10 @@ Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `
   - Full screen (landscape on Android; the bar tucks away), Low/Medium/High quality, 15/30/60 fps. Captured on the GPU (DXGI, a few ms a frame, nothing to do while the screen is still), with GDI as the fallback. Two frames are on their way at a time, so the Wi-Fi's round trip doesn't slow it down, and frames only go when something changed, so a slow connection gets fewer frames instead of falling behind. About 20-30 fps over home Wi-Fi.
   - One device at a time. Another one sees who's watching (which phone or PC, since when) with a Take over button, and starts by itself once the screen is free; the same device coming back (a reload) just reconnects. Held keys and buttons are let go when a device disconnects. The Now tab shows who's watching, on which screen, the frame rate and bitrate, and whether sound is on; the activity feed has each open and close with the device.
   - It can't show the lock screen or UAC prompts (the picture comes back by itself after), can't click into programs run as administrator (unless the bot is too), and a few exclusive-fullscreen games show black: use borderless or windowed mode. Fast action games want Sunshine + Moonlight instead.
+  - Only the parts of the screen that changed are sent (64 px tiles, drawn over what the phone has), so a casual game uses a fraction of the Wi-Fi: about 1.5 Mbit/s instead of 12 at Medium in testing, and a pointer move is a few KB instead of a whole frame.
+  - The phone's screen stays on while streaming, as with a video (Wake Lock on https; a tiny silent looping video on plain http).
+  - The sound's buffer adapts: a dropout makes it a little longer (up to 0.25 s), and it shrinks back while the Wi-Fi is steady.
+  - A stats line while streaming: fps, Mbit/s, and the time per frame on the PC and on the phone (also on the Now tab).
   - `DASHBOARD_SCREEN=false` turns it off.
   - New dependencies: `mss`, `Pillow`, `dxcam` and `soundcard` (`pip install -r requirements.txt`).
 

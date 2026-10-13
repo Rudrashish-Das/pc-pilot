@@ -34,7 +34,8 @@ COOKIE = "llmbot_dashboard"
 PAGE = Path(__file__).with_name("dashboard.html")
 IMAGES = {"/logo.png": Path(__file__).with_name("dashboard_logo.png"),  # also the phone home-screen icon
           "/favicon.png": Path(__file__).with_name("dashboard_favicon.png"),
-          "/logo512.png": Path(__file__).with_name("dashboard_logo512.png")}
+          "/logo512.png": Path(__file__).with_name("dashboard_logo512.png"),
+          "/keepawake.mp4": Path(__file__).with_name("keepawake.mp4")}  # Screen tab: keeps a phone's screen on
 # Lets Chrome install the page as an app (its own window and icon) rather than only a shortcut. Chrome still needs a
 # secure origin for that: https with a trusted certificate, localhost, or the insecure-origin flag (README).
 MANIFEST = {

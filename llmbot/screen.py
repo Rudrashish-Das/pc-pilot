@@ -5,9 +5,10 @@ Made for casual games and quick remote control over Wi-Fi, not fast action games
 Frames: the chosen monitor, captured with DXGI Desktop Duplication (dxcam: a few ms a frame, free while the screen is
 still, and it sees many fullscreen games) or GDI as a fallback (mss: ~35 ms at 1440p), then scaled and JPEG-encoded
 with Pillow, all on one worker thread. The page keeps two frame requests ("next") in flight: the Wi-Fi's round trip is
-hidden, yet a slow phone or connection gets fewer frames instead of a growing delay. A frame identical to the last one
-isn't resent. The mouse pointer is drawn into the frames as it really looks (hand, text cursor, a game's own), or sent
-as a position for the page to draw an arrow (moves at once, without a frame), or both, like AnyDesk.
+hidden, yet a slow phone or connection gets fewer frames instead of a growing delay. Only the 64 px tiles that changed
+are sent (a casual game rarely changes much of the screen at once), drawn by the page over what it has; nothing when
+nothing changed. The mouse pointer is drawn into the frames as it really looks (hand, text cursor, a game's own), or
+sent as a position for the page to draw an arrow (moves at once, without a frame), or both, like AnyDesk.
 Input: SendInput (absolute mouse on the virtual desktop; keys as scan codes, so games that read raw input see them;
 typed text as Unicode). One device at a time; another one can take over.
 
@@ -36,7 +37,7 @@ log = logging.getLogger("llmbot.screen")
 QUALITY = {"low": (960, 50), "medium": (1280, 62), "high": (1920, 75)}
 FPS_MAX = 60
 IN_FLIGHT_MAX = 4  # frame requests the page may have outstanding (it uses 2)
-KEEPALIVE = 2.0  # resend an unchanged frame this often, so the page knows the stream is alive
+REFRESH = 10.0  # resend the whole frame this often even when little changed (a safety net, ~60 KB)
 
 _pool = ThreadPoolExecutor(1, thread_name_prefix="screen")  # capture objects belong to the thread that made them
 _cap: Any = None  # Capture, used only on _pool
@@ -307,19 +308,63 @@ class Capture:
         self.cam = self.gdi = None
 
 
-def grab(mon: dict, width: int, quality: int, fresh_only: bool,
-         draw: tuple[int, int, int] | None) -> tuple[bytes | None, int, int]:
-    """(JPEG of the monitor at most `width` wide, or None when unchanged; the monitor's full width and height).
-    draw: the pointer to draw in (pointer()), or None."""
+TILE = 64  # px of the scaled frame; a multiple of JPEG's 16 px blocks, so tiles join without seams
+FULL_ABOVE = 0.5  # more than this much of the picture changed: one whole frame is smaller than many tiles
+
+
+def changed_rects(prev, cur) -> list[tuple[int, int, int, int]]:
+    """Where two frames (H x W x 3 arrays) differ, as (x, y, w, h) rectangles on the TILE grid: changed tiles joined
+    into runs along each row, and identical runs in the rows below joined into taller rectangles."""
+    import numpy as np
+
+    h, w = cur.shape[:2]
+    rows, cols = -(-h // TILE), -(-w // TILE)
+    a, b, per = prev.reshape(h, w * 3), cur.reshape(h, w * 3), TILE * 3
+    if (w * 3) % 8 == 0 and a.flags.c_contiguous and b.flags.c_contiguous:
+        a, b, per = a.view(np.uint64), b.view(np.uint64), TILE * 3 // 8  # 8 bytes at a time: a tile is 24 words
+    diff = a != b
+    diff = np.logical_or.reduceat(diff, np.arange(0, diff.shape[1], per), axis=1)
+    tiles = np.logical_or.reduceat(diff, np.arange(0, h, TILE), axis=0)
+    rects: list[list[int]] = []
+    open_runs: dict[tuple[int, int], list[int]] = {}  # (first col, last col) -> the rectangle growing downwards
+    for r in range(rows):
+        runs, c = [], 0
+        while c < cols:
+            if tiles[r, c]:
+                start = c
+                while c + 1 < cols and tiles[r, c + 1]:
+                    c += 1
+                runs.append((start, c))
+            c += 1
+        grown = {}
+        for run in runs:
+            rect = open_runs.get(run)
+            if rect is not None and rect[1] + rect[3] == r * TILE:
+                rect[3] += TILE
+            else:
+                rect = [run[0] * TILE, r * TILE, (run[1] - run[0] + 1) * TILE, TILE]
+                rects.append(rect)
+            grown[run] = rect
+        open_runs = grown
+    return [(x, y, min(rw, w - x), min(rh, h - y)) for x, y, rw, rh in rects]
+
+
+def grab(mon: dict, width: int, quality: int, fresh_only: bool, draw: tuple[int, int, int] | None,
+         ref: dict, full: bool) -> tuple[list | None, int, int, tuple[int, int], float]:
+    """(parts, the monitor's full width and height, the frame's size, ms spent). parts: [(x, y, w, h, JPEG)] of what
+    changed since the frame in ref["prev"] (what this viewer already has), or the whole frame when full or when most
+    of it changed; [] or None when nothing did. draw: the pointer to draw in (pointer()), or None."""
     global _cap
+    import numpy as np
     from PIL import Image
 
+    t0 = time.perf_counter()
     if _cap is None or _cap.mon != mon:
         _reset_capture()
         _cap = Capture(mon)
-    img = _cap.image(fresh_only)
+    img = _cap.image(fresh_only and not full)
     if img is None:
-        return None, mon["width"], mon["height"]
+        return None, mon["width"], mon["height"], (0, 0), 0.0
     if draw is not None:
         try:
             draw_pointer(img, mon, draw)
@@ -331,9 +376,21 @@ def grab(mon: dict, width: int, quality: int, fresh_only: bool,
             img = img.reduce(factor)
         if img.width > width * 1.15:
             img = img.resize((width, round(img.height * width / img.width)), Image.BILINEAR)
-    buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=quality)
-    return buf.getvalue(), mon["width"], mon["height"]
+    cur = np.asarray(img)
+    prev = ref.get("prev")
+    if full or prev is None or prev.shape != cur.shape:
+        rects = [(0, 0, img.width, img.height)]
+    else:
+        rects = changed_rects(prev, cur)
+        if sum(w * h for _, _, w, h in rects) > FULL_ABOVE * img.width * img.height:
+            rects = [(0, 0, img.width, img.height)]
+    parts = []
+    for x, y, w, h in rects:
+        buf = io.BytesIO()
+        (img if (w, h) == img.size else img.crop((x, y, x + w, y + h))).save(buf, "JPEG", quality=quality)
+        parts.append((x, y, w, h, buf.getvalue()))
+    ref["prev"] = cur
+    return parts, mon["width"], mon["height"], img.size, (time.perf_counter() - t0) * 1000
 
 
 def _reset_capture() -> None:
@@ -517,15 +574,16 @@ def device_name(ua: str) -> str:
 
 def status() -> dict | None:
     """The stream right now, or None: {who (IP), device, since (epoch s), monitor (1-based), monitors, fps, kbps,
-    quality, cursor}."""
+    ms (the PC's time per frame), quality, cursor, audio}."""
     if _session is None or _viewer is None or _viewer.closed:
         return None
     now = time.monotonic()
-    recent = [(t, n) for t, n in _session["sent"] if now - t <= 2.0]
+    recent = [(t, n, ms) for t, n, ms in _session["sent"] if now - t <= 2.0]
     return {**{k: v for k, v in _session.items() if k not in ("sent", "st", "ua")},
             "monitor": _session["st"]["mon_i"] + 1, "quality": _session["st"]["quality"],
             "cursor": _session["st"]["cursor"], "fps": round(len(recent) / 2, 1),
-            "kbps": round(sum(n for _, n in recent) * 8 / 2 / 1000)}
+            "kbps": round(sum(n for _, n, _ in recent) * 8 / 2 / 1000),
+            "ms": round(sum(ms for *_, ms in recent) / len(recent), 1) if recent else None}
 
 
 def _monitor_list(mons: list[dict]) -> list[dict]:
@@ -536,7 +594,9 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
     """Messages from the page (JSON): next (one more frame wanted), opts {quality, fps, monitor, cursor: "arrow" |
     "real" | "both"}, and input (see Input.handle). To the page: {monitors: [{w, h, primary}], monitor} at the
     start and when they change; {screen: [w, h], cursor: [x, y] | null, frame} when the picture or the pointer
-    changed, followed by the frame (binary JPEG) when frame is true; {status} and {error}.
+    changed. With frame true it also has size [w, h] (the scaled frame), parts [[x, y, w, h, bytes]] (what changed,
+    or the whole frame) and ms (the PC's time for it), and one binary message follows: the parts' JPEGs, one after
+    another. {status} and {error}.
     Someone else already watching: {busy: status()} and closed, unless ?take=1 (the page's Take over button) or it's
     the same device coming back (a reload, a dropped Wi-Fi the server hasn't noticed yet)."""
     global _viewer, _session
@@ -569,7 +629,7 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
     loop = asyncio.get_running_loop()
     mons = monitors()
     st = {"quality": "medium", "fps": 30, "mon": mons[0], "mon_i": 0, "cursor": "arrow", "credits": 0, "force": True}
-    sent: deque = deque(maxlen=FPS_MAX * 3)  # (time, bytes) of recent frames, for status()
+    sent: deque = deque(maxlen=FPS_MAX * 3)  # (time, bytes, ms) of recent frames, for status()
     _session = {"who": who, "ua": ua, "device": device, "since": time.time(), "monitors": len(mons), "st": st,
                 "sent": sent, "audio": False}
     inp = Input(st["mon"])
@@ -577,7 +637,8 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
     await ws.send_json({"monitors": _monitor_list(mons), "monitor": 0})
 
     async def frames() -> None:
-        last, last_at, last_ptr, last_pos, failing = b"", 0.0, None, None, False
+        last_full, last_ptr, last_pos, failing = time.monotonic(), None, None, False
+        ref: dict = {}  # the frame this page has, to send only what changed
         while not ws.closed:
             while st["credits"] <= 0:
                 wake.clear()
@@ -589,11 +650,11 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
             ptr = pointer()
             pos = on_monitor(ptr, mon)
             redraw = real and ptr != last_ptr  # the drawn pointer moved or changed shape
-            stale = time.monotonic() - last_at > KEEPALIVE
+            full = st["force"] or time.monotonic() - last_full > REFRESH
             try:
-                jpeg, w, h = await loop.run_in_executor(
-                    _pool, grab, mon, width, quality, not (st["force"] or stale or redraw),
-                    ptr if real and pos is not None else None)
+                parts, w, h, size, ms = await loop.run_in_executor(
+                    _pool, grab, mon, width, quality, not (full or redraw), ptr if real and pos is not None else None,
+                    ref, full)
             except Exception as e:  # locked, UAC prompt, display mode change
                 if not failing:
                     log.info("Screen capture failed: %s: %s", type(e).__name__, e)
@@ -606,20 +667,24 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
             if failing:
                 failing = False
                 await ws.send_json({"status": ""})
-            if jpeg is not None:
-                st["force"] = False
-            changed = jpeg is not None and (jpeg != last or stale)
-            if jpeg is not None:
+            if parts is not None:
                 last_ptr = ptr
+                if full:
+                    st["force"], last_full = False, time.monotonic()
+            changed = bool(parts)
             moved = arrow and pos != last_pos
             if changed or moved:  # the arrow alone moving is just its position, no frame
                 st["credits"] -= 1
                 last_pos = pos
-                await ws.send_json({"screen": [w, h], "cursor": pos if arrow else None, "frame": changed})
+                head = {"screen": [w, h], "cursor": pos if arrow else None, "frame": changed}
+                if changed:  # the parts' places and lengths; their JPEGs follow in one binary message
+                    head.update(size=list(size), parts=[[x, y, pw, ph, len(j)] for x, y, pw, ph, j in parts],
+                                ms=round(ms, 1))
+                await ws.send_json(head)
                 if changed:
-                    last, last_at = jpeg, time.monotonic()
-                    await ws.send_bytes(jpeg)
-                    sent.append((last_at, len(jpeg)))
+                    data = b"".join(j for *_, j in parts)
+                    await ws.send_bytes(data)
+                    sent.append((time.monotonic(), len(data), ms))
             await asyncio.sleep(max(0.0, 1 / st["fps"] - (time.monotonic() - t0)))
 
     async def frames_or_close() -> None:
