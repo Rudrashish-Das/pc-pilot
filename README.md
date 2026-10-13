@@ -64,6 +64,8 @@ Details: [docs/SETUP.md › Security](docs/SETUP.md#security).
 
 ## Setup
 
+**New to this?** The [beginner guide](docs/BEGINNER_GUIDE.md) walks through everything in plain language, no coding needed.
+
 The steps are written for **Windows** (the bot is developed on Windows 11). Linux and macOS should work too: use `source .venv/bin/activate` and `python3`, and skip the startup script.
 
 ### What you need
@@ -74,7 +76,7 @@ The steps are written for **Windows** (the bot is developed on Windows 11). Linu
 | Git | cloning the repo | [git-scm.com](https://git-scm.com/) |
 | A Discord **or** Telegram bot token (or both) | always | steps 2 and 3 below |
 | [Ollama](https://ollama.com) + a model | the 💻 Local and ✨ Auto engines | step 5 |
-| [Claude Code](https://docs.claude.com/en/docs/claude-code) + an Anthropic account | the 🤖 Claude Code engine (it can also run on Ollama for free) | step 6 |
+| [Claude Code](https://docs.claude.com/en/docs/claude-code) + an Anthropic account | the 🤖 Claude Code engine (it can also run for free on Ollama or [free cloud models](#claude-code-on-free-cloud-models-no-paid-plan-no-gpu)) | step 6 |
 
 You need at least one engine. The easiest free start is Ollama. The most capable is Claude Code.
 
@@ -172,6 +174,38 @@ claude
   CC_MAX_BUDGET_USD=1.0       # per job
   CC_DAILY_BUDGET_USD=5.0     # per day
   ```
+
+### Claude Code on free cloud models (no paid plan, no GPU)
+
+The `claude` CLI is free to install. It only needs a model behind it. The free claude.ai plan doesn't include Claude Code, but you can point Claude Code at a free Anthropic-compatible endpoint instead. Install it as in step 6 and skip the login.
+
+**OpenRouter free models** (🔌 Custom gateway backend). Create a key at [openrouter.ai/keys](https://openrouter.ai/keys), then set:
+
+```ini
+DEFAULT_ENGINE=claude
+CC_BACKEND=custom
+CC_CUSTOM_BASE_URL=https://openrouter.ai/api
+CC_CUSTOM_TOKEN=sk-or-v1-...
+CC_CUSTOM_MODELS=qwen/qwen3-coder:free,deepseek/deepseek-chat-v3.1:free
+CC_MODEL=qwen/qwen3-coder:free
+```
+
+- Use only model IDs that end in `:free` and support tool calling. The free list changes, so check [openrouter.ai/models](https://openrouter.ai/models?max_price=0). A paid ID would charge your OpenRouter credits.
+- The bot maps every Claude Code model tier (opus, sonnet, haiku) to the chosen model, so Claude Code's background calls don't go to a paid Claude model.
+- Free models have daily and per-minute request limits. A long agent job makes many requests.
+
+**Ollama Cloud** (🦙 Ollama backend). Install Ollama as in step 5, but pull a `-cloud` model instead of a local one. It runs on Ollama's servers, so your GPU doesn't matter:
+
+```powershell
+ollama signin                     # free Ollama account, opens a browser
+ollama pull gpt-oss:120b-cloud    # or another model ending in -cloud from ollama.com/search?c=cloud
+```
+
+Then set `CC_BACKEND=ollama` and `CC_MODEL=gpt-oss:120b-cloud`, or pick them in `/panel` → ⚙️ Settings. The free tier has hourly and daily usage limits.
+
+**Other free keys** (Gemini, Groq…) don't speak Anthropic's API. Run a [LiteLLM](https://docs.litellm.ai/docs/simple_proxy) proxy in front of them and point `CC_CUSTOM_BASE_URL` at it (for example `http://localhost:4000`).
+
+These models are weaker than Claude at long, multi-step work such as controlling the PC. They work well for chat, web lookups and smaller coding jobs.
 
 ### Optional: Postgres instead of files
 
