@@ -2,6 +2,15 @@
 
 Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `bot_v22.py`). From 0.23.0 on, git history is the record.
 
+## Unreleased
+- 🎮 **Dashboard Screen tab**: the PC's screen on your phone, controlled by touch, for casual games and quick remote control over the same Wi-Fi.
+  - Touch mode: tap clicks there, drag drags, long press right-clicks. Trackpad mode: drag moves the pointer, tap clicks. Two fingers scroll; a two-finger tap right-clicks. ✊ Hold keeps the left button down. A mouse on a PC browser works as itself.
+  - ⌨️ types with the phone's keyboard. The key bar is yours to choose (✎): any letters, Esc, Enter, arrows, F-keys, combinations like Alt+Tab, held down as long as your finger is on them, so walking with arrows or WASD works.
+  - Full screen (landscape on Android; the bar tucks away), Low/Medium/High quality and a frame-rate cap. Frames are sent one at a time as the phone is ready and only when something changed, so a slow connection gets fewer frames instead of falling behind. About 10-25 fps.
+  - Shows the main monitor. It can't show the lock screen or UAC prompts, can't click into programs run as administrator (unless the bot is too), and some exclusive-fullscreen games show black: use borderless or windowed mode. Fast action games want Sunshine + Moonlight instead.
+  - One viewer at a time; held keys and buttons are let go when the phone disconnects. Opening and closing it is in the activity feed. `DASHBOARD_SCREEN=false` turns it off.
+  - New dependencies: `mss` and `Pillow` (`pip install -r requirements.txt`).
+
 ## 0.25.0
 - Docs: a [beginner guide](docs/BEGINNER_GUIDE.md) (Telegram, step by step, no coding), and README instructions for running Claude Code on free cloud models: OpenRouter `:free` models, Ollama Cloud, or other free keys through a LiteLLM proxy.
 - Fixed: Claude Code's login on the PC kept getting wiped ("OAuth session expired and could not be refreshed"). The bot's skill check, run at every start, killed `claude` as soon as it had listed the skills. When the login's token had expired, that run was renewing it at that moment, and killing it lost the new tokens after the old refresh token had already been retired. The next run then couldn't refresh and Claude Code logged out. The check now lets the run finish (a one-word Haiku reply) and only stops a stuck one after 90 s.

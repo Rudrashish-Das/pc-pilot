@@ -423,6 +423,9 @@ DASHBOARD_NAME = _env("DASHBOARD_NAME", "llmbot")
 # The same dashboard over HTTPS (self-signed certificate in data/): phones only allow the microphone (voice input in
 # the chat) on https pages. 0 = off.
 DASHBOARD_HTTPS_PORT = int(_num("DASHBOARD_HTTPS_PORT", 8766))
+# The dashboard's Screen tab (llmbot/screen.py): see and control this PC's screen from the phone (casual games,
+# remote help). Anyone with the access key can use it, like the owner chat.
+DASHBOARD_SCREEN = _env("DASHBOARD_SCREEN", "true").lower() in ("1", "true", "yes", "on")
 STORE: Any = store_mod.FileStore(DATA_DIR)
 
 _settings: dict[str, dict] = {}

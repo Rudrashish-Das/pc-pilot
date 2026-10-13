@@ -164,6 +164,39 @@ input[type=search] { font: inherit; flex: 1; min-width: 0; padding: 8px 12px; bo
 ::-webkit-scrollbar-button { display: none; }
 .composer textarea { scrollbar-width: none; }
 .composer textarea::-webkit-scrollbar { display: none; }
+/* screen (llmbot/screen.py) */
+body.screening main { padding-bottom: 0; }
+body.screening { overscroll-behavior: none; }
+.scr { display: flex; flex-direction: column; gap: 8px; height: var(--chat-h, calc(100dvh - var(--head, 100px) - 14px)); min-height: 280px; }
+.scr-stage { position: relative; flex: 1; min-height: 0; background: #000; border-radius: 12px; overflow: hidden;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.scr-stage canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
+.scr-cursor { position: absolute; width: 14px; height: 21px; margin: -1px 0 0 -1px; pointer-events: none;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 21'%3E%3Cpath d='M1 1v16l4-4 3 7 3-1-3-7h5z' fill='%23fff' stroke='%23000' stroke-width='1.2' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat; }
+.scr-msg { position: absolute; inset: 0; display: grid; place-items: center; padding: 20px; text-align: center; color: #ddd;
+  font-size: 15px; pointer-events: none; }
+.scr-msg:empty { display: none; }
+.scr-msg.over { background: #000a; }
+.scr-bar { display: flex; gap: 6px; align-items: center; overflow-x: auto; scrollbar-width: none; flex: none; }
+.scr-bar::-webkit-scrollbar { display: none; }
+.scr-bar .btn { padding: 8px 11px; flex: none; touch-action: manipulation; user-select: none; -webkit-user-select: none; }
+.scr-bar .btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.scr-bar select { font: inherit; font-size: 14px; padding: 7px 8px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--card); color: var(--text); flex: none; }
+.scr-bar .sep { width: 1px; align-self: stretch; background: var(--line); flex: none; }
+.scr-stat { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; flex: none; padding: 0 4px; }
+.scr-type { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; font-size: 16px; }
+/* full screen: the stream fills the window; the bar floats over its bottom and can be tucked away */
+.scr.full { position: fixed; inset: 0; z-index: 30; height: auto; min-height: 0; background: #000; gap: 0;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+.scr.full .scr-stage { border-radius: 0; }
+.scr.full .scr-bar { padding: 6px; background: #000c; }
+.scr.full .scr-bar .btn, .scr.full .scr-bar select { background: #222; color: #eee; border-color: #444; }
+.scr.full .scr-bar .btn.on { background: var(--accent); border-color: var(--accent); }
+.scr.full.tucked .scr-bar > :not(#scr-tuck) { display: none; }
+.scr.full.tucked .scr-bar { position: absolute; right: 0; bottom: 0; background: none; }
+.scr.full.tucked #scr-tuck { opacity: .55; }
+#scr-tuck { display: none; } .scr.full #scr-tuck { display: inline-block; }
 /* chat */
 body.chatting main { padding-bottom: 0; }
 body.chatting #offline { margin-bottom: 8px; }
@@ -261,6 +294,7 @@ dialog .row { justify-content: flex-end; }
       <button data-tab="jobs">Claude jobs</button>
       <button data-tab="schedule">Scheduled <span class="n" id="n-sched">0</span></button>
       <button data-tab="log">Log</button>
+      <button data-tab="screen" id="tab-screen" class="hide">Screen</button>
     </nav>
   </div>
 </header>
@@ -332,6 +366,32 @@ dialog .row { justify-content: flex-end; }
     <div class="grid">
       <div class="card"><h2>Reminders</h2><div id="reminders" class="list"></div></div>
       <div class="card"><h2>Scheduled prompts</h2><div id="tasks" class="list"></div></div>
+    </div>
+  </section>
+  <section id="screen">
+    <div class="scr" id="scr">
+      <div class="scr-stage" id="scr-stage">
+        <canvas id="scr-canvas" width="16" height="9"></canvas>
+        <div class="scr-cursor hide" id="scr-cursor"></div>
+        <div class="scr-msg over" id="scr-msg">Connecting…</div>
+      </div>
+      <div class="scr-bar" id="scr-bar">
+        <button class="btn" id="scr-tuck" title="Hide or show these buttons">▾</button>
+        <button class="btn" id="scr-full" title="Full screen">⛶</button>
+        <button class="btn" id="scr-mode" title="Touch: tap where you want to click. Trackpad: drag to move the pointer, tap to click."></button>
+        <button class="btn" id="scr-hold" title="Keep the left mouse button pressed (drag things in trackpad mode)">✊ Hold</button>
+        <button class="btn" id="scr-kbd" title="Type on the PC with the phone's keyboard">⌨️</button>
+        <span class="sep"></span>
+        <span id="scr-keys" style="display:contents"></span>
+        <button class="btn" id="scr-keys-edit" title="Choose these keys">✎</button>
+        <span class="sep"></span>
+        <select id="scr-quality" title="Picture quality (lower = smoother on slow Wi-Fi)">
+          <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select>
+        <select id="scr-fps" title="Most frames per second">
+          <option value="10">10 fps</option><option value="15">15 fps</option><option value="20">20 fps</option><option value="30">30 fps</option></select>
+        <span class="scr-stat" id="scr-stat"></span>
+      </div>
+      <input class="scr-type" id="scr-type" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="send" aria-label="Type on the PC">
     </div>
   </section>
   <section id="log">
@@ -513,6 +573,8 @@ function render() {
   $("dot").className = "dot " + (working ? "run" : fe.length && fe.every((f) => f.ok) ? "ok" : "err");
   $("sub").textContent = (working ? "working" : "idle") + " · up " + dur(st.now - b.started);
   $("n-sched").textContent = st.reminders.length + st.tasks.length;
+  $("tab-screen").classList.toggle("hide", !st.screen);
+  if (!st.screen && S.tab === "screen") { show("now"); return; }
   if (S.tab === "now") renderNow();
   if (S.tab === "activity" && changed("feed", [S.events.length, S.lastId, S.oldestId])) renderFeed();
   if (S.tab === "schedule" && changed("schedule", [st.tasks, st.reminders, Math.floor(nowS() / 60)])) renderSchedule();
@@ -1195,6 +1257,295 @@ $("chat-more").addEventListener("click", async () => {
 });
 window.addEventListener("resize", sizeChat);
 
+// ---- screen: the PC's screen, touches sent back as mouse and keyboard (llmbot/screen.py)
+// Touch mode: tap = click there, drag = drag, long press = right click. Trackpad mode: drag moves the pointer, tap =
+// click. Both: two fingers = scroll, two-finger tap = right click. A mouse on a PC browser works as itself.
+const SCR_KEYS = "Esc Enter Space Left Up Down Right";
+const KEY_LABEL = { esc: "Esc", escape: "Esc", enter: "⏎", space: "Space", left: "←", up: "↑", down: "↓", right: "→",
+  backspace: "⌫", tab: "Tab" };
+const SC = { ws: null, mode: "touch", quality: "medium", fps: 15, keys: null, size: [16, 9], cursor: null, retry: 0,
+  timer: null, fatal: false, hold: false, pts: new Map(), g: null, typed: "", frames: 0, fpsAt: 0, lock: null };
+try {
+  SC.mode = localStorage.getItem("scr-mode") === "trackpad" ? "trackpad" : "touch";
+  SC.quality = localStorage.getItem("scr-quality") || "medium";
+  SC.fps = +localStorage.getItem("scr-fps") || 15;
+  SC.keys = localStorage.getItem("scr-keys");
+} catch (e) {}
+if (SC.keys == null) SC.keys = SCR_KEYS;
+
+function scrSend(m) {
+  const ws = SC.ws;
+  if (!ws || ws.readyState !== 1) return;
+  if ((m.t === "move" || m.t === "rel") && ws.bufferedAmount > 32768) return;  // Wi-Fi hiccup: drop pointer moves, not clicks
+  ws.send(JSON.stringify(m));
+}
+function scrMsg(text, over) { const el = $("scr-msg"); el.textContent = text || ""; el.classList.toggle("over", !!over); }
+function scrNext() { scrSend({ t: "next" }); }
+function scrConnect() {
+  if (SC.ws || S.tab !== "screen" || document.hidden) return;
+  clearTimeout(SC.timer);
+  SC.fatal = false;
+  scrMsg("Connecting…", true);
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/screen");
+  SC.ws = ws;
+  ws.onopen = () => {
+    SC.retry = 0;
+    scrSend({ t: "opts", quality: SC.quality, fps: SC.fps });
+    scrNext();
+    if (navigator.wakeLock) navigator.wakeLock.request("screen").then((l) => { SC.lock = l; }).catch(() => {});  // https only
+  };
+  ws.onmessage = async (e) => {
+    if (SC.ws !== ws) return;
+    if (typeof e.data === "string") {
+      let m;
+      try { m = JSON.parse(e.data); } catch (err) { return; }
+      if (m.error) { SC.fatal = true; scrMsg(m.error, true); return; }
+      if ("status" in m) { scrMsg(m.status, !!m.status); return; }
+      if (m.screen) SC.size = m.screen;
+      SC.cursor = m.cursor;
+      scrCursor();
+      if (!m.frame) scrNext();  // only the pointer moved: no picture follows
+      return;
+    }
+    try {
+      const bmp = await createImageBitmap(e.data), c = $("scr-canvas");
+      if (c.width !== bmp.width || c.height !== bmp.height) { c.width = bmp.width; c.height = bmp.height; scrCursor(); }
+      c.getContext("2d").drawImage(bmp, 0, 0);
+      if (bmp.close) bmp.close();
+      if ($("scr-msg").classList.contains("over")) scrMsg("");
+      SC.frames++;
+      const now = performance.now();
+      if (now - SC.fpsAt > 1000) {
+        $("scr-stat").textContent = Math.round(SC.frames * 1000 / (now - SC.fpsAt)) + " fps · " + Math.round(e.data.size / 1024) + " KB";
+        SC.frames = 0; SC.fpsAt = now;
+      }
+    } catch (err) {}
+    scrNext();
+  };
+  ws.onclose = () => {
+    if (SC.ws !== ws) return;
+    SC.ws = null;
+    scrHold(false, true);
+    if (SC.fatal || S.tab !== "screen" || document.hidden) return;
+    scrMsg("Disconnected. Reconnecting…", true);
+    SC.timer = setTimeout(scrConnect, Math.min(10000, 1000 * 2 ** SC.retry++));
+  };
+}
+function scrClose() {
+  clearTimeout(SC.timer);
+  const ws = SC.ws;
+  SC.ws = null;
+  if (ws) ws.close();  // the PC lets go of any held keys and buttons
+  scrHold(false, true);
+  if (SC.lock) { SC.lock.release().catch(() => {}); SC.lock = null; }
+}
+// Where the picture is drawn inside the stage (object-fit: contain leaves bars on two sides)
+function scrGeom() {
+  const r = $("scr-stage").getBoundingClientRect(), c = $("scr-canvas");
+  const k = Math.min(r.width / c.width, r.height / c.height), w = c.width * k, hh = c.height * k;
+  return { r, x: r.left + (r.width - w) / 2, y: r.top + (r.height - hh) / 2, w, h: hh };
+}
+function scrAt(x, y) {
+  const g = scrGeom(), clamp = (v) => Math.min(1, Math.max(0, v));
+  return { x: clamp((x - g.x) / g.w), y: clamp((y - g.y) / g.h) };
+}
+function scrCursor() {
+  const el = $("scr-cursor"), p = SC.cursor;
+  el.classList.toggle("hide", !p);
+  if (!p) return;
+  const g = scrGeom();
+  el.style.left = (g.x - g.r.left + p[0] * g.w) + "px";
+  el.style.top = (g.y - g.r.top + p[1] * g.h) + "px";
+}
+function scrHold(on, quiet) {
+  if (SC.hold === on) return;
+  SC.hold = on;
+  $("scr-hold").classList.toggle("on", on);
+  if (!quiet) scrSend({ t: on ? "down" : "up", b: "left" });
+}
+function scrMid() {
+  const p = [...SC.pts.values()];
+  return { x: p.reduce((a, q) => a + q.x, 0) / p.length, y: p.reduce((a, q) => a + q.y, 0) / p.length };
+}
+const stage = $("scr-stage");
+stage.addEventListener("contextmenu", (e) => e.preventDefault());
+stage.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  if (e.deltaY) scrSend({ t: "wheel", dy: -Math.sign(e.deltaY) * 120 });
+  if (e.deltaX) scrSend({ t: "wheel", dx: Math.sign(e.deltaX) * 120 });
+}, { passive: false });
+stage.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  stage.setPointerCapture(e.pointerId);
+  if (document.activeElement === typ) typ.blur();
+  if (e.pointerType === "mouse") {
+    scrSend({ t: "down", b: ["left", "middle", "right"][e.button] || "left", ...scrAt(e.clientX, e.clientY) });
+    return;
+  }
+  SC.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (SC.pts.size === 1) {
+    const g = SC.g = { two: false, sx: e.clientX, sy: e.clientY, lx: e.clientX, ly: e.clientY, t: performance.now(),
+      at: scrAt(e.clientX, e.clientY), moved: false, dragging: false, long: false, fx: 0, fy: 0 };
+    if (SC.mode === "touch") g.timer = setTimeout(() => {
+      if (SC.g !== g || g.moved || SC.hold) return;
+      g.long = true;
+      scrSend({ t: "click", b: "right", ...g.at });
+      if (navigator.vibrate) navigator.vibrate(15);
+    }, 550);
+  } else if (SC.g && !SC.g.two) {
+    clearTimeout(SC.g.timer);
+    if (SC.g.dragging && !SC.hold) scrSend({ t: "up", b: "left" });
+    const m = scrMid();
+    SC.g = { two: true, t: performance.now(), moved: false, px: m.x, py: m.y, ax: 0, ay: 0, at: scrAt(m.x, m.y) };
+  }
+});
+stage.addEventListener("pointermove", (e) => {
+  if (e.pointerType === "mouse") { scrSend({ t: "move", ...scrAt(e.clientX, e.clientY) }); return; }
+  if (!SC.pts.has(e.pointerId)) return;
+  SC.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const g = SC.g;
+  if (!g) return;
+  if (g.two) {  // scroll: about 30 px of finger per wheel notch, content follows the fingers
+    const m = scrMid();
+    g.ax += m.x - g.px; g.ay += m.y - g.py; g.px = m.x; g.py = m.y;
+    const sy = Math.trunc(g.ay / 30), sx = Math.trunc(g.ax / 30);
+    if (sy || sx) { g.moved = true; g.ay -= sy * 30; g.ax -= sx * 30; scrSend({ t: "wheel", dy: sy * 120, dx: -sx * 120 }); }
+    return;
+  }
+  if (!g.moved && Math.hypot(e.clientX - g.sx, e.clientY - g.sy) > 10) { g.moved = true; clearTimeout(g.timer); }
+  if (SC.mode === "touch") {
+    if (g.moved && !g.long) {
+      if (!g.dragging && !SC.hold) scrSend({ t: "down", b: "left", ...g.at });
+      g.dragging = true;
+      scrSend({ t: "move", ...scrAt(e.clientX, e.clientY) });
+    }
+  } else {  // trackpad: the finger moves the pointer as far as it moves over the picture
+    const k = SC.size[0] / scrGeom().w;
+    g.fx += (e.clientX - g.lx) * k; g.fy += (e.clientY - g.ly) * k;
+    const dx = Math.trunc(g.fx), dy = Math.trunc(g.fy);
+    g.fx -= dx; g.fy -= dy;
+    if (dx || dy) {
+      scrSend({ t: "rel", dx, dy });
+      if (SC.cursor) {  // show it moving now; the PC's real position arrives with the next update
+        SC.cursor = [Math.min(1, Math.max(0, SC.cursor[0] + dx / SC.size[0])), Math.min(1, Math.max(0, SC.cursor[1] + dy / SC.size[1]))];
+        scrCursor();
+      }
+    }
+  }
+  g.lx = e.clientX; g.ly = e.clientY;
+});
+function scrUp(e) {
+  if (e.pointerType === "mouse") {
+    scrSend({ t: "up", b: ["left", "middle", "right"][e.button] || "left", ...scrAt(e.clientX, e.clientY) });
+    return;
+  }
+  if (!SC.pts.delete(e.pointerId)) return;
+  const g = SC.g;
+  if (!g) return;
+  const quick = performance.now() - g.t < 350, cancel = e.type === "pointercancel";
+  if (g.two) {
+    if (SC.pts.size) return;  // until the last finger lifts
+    if (!g.moved && quick && !cancel) scrSend({ t: "click", b: "right", ...(SC.mode === "touch" ? g.at : {}) });
+  } else {
+    clearTimeout(g.timer);
+    if (g.dragging) { if (!SC.hold) scrSend({ t: "up", b: "left", ...scrAt(e.clientX, e.clientY) }); }
+    else if (cancel || g.long || g.moved) { /* nothing */ }
+    else if (SC.mode === "touch") scrSend(SC.hold ? { t: "move", ...g.at } : { t: "click", b: "left", ...g.at });
+    else if (quick && !SC.hold) scrSend({ t: "click", b: "left" });
+  }
+  SC.g = null;
+}
+stage.addEventListener("pointerup", scrUp);
+stage.addEventListener("pointercancel", scrUp);
+
+function scrKeys() {
+  put($("scr-keys"), SC.keys.split(/\s+/).filter(Boolean).map((k) => {
+    const b = h("button", { class: "btn", title: k, type: "button" }, KEY_LABEL[k.toLowerCase()] || k);
+    const up = () => { if (!b.classList.contains("on")) return; b.classList.remove("on"); scrSend({ t: "key", k, a: "up" }); };
+    // pressed as long as the finger is on it (hold an arrow to walk), not just tapped
+    b.addEventListener("pointerdown", (e) => { e.preventDefault(); b.classList.add("on"); scrSend({ t: "key", k, a: "down" }); });
+    for (const ev of ["pointerup", "pointercancel", "pointerleave"]) b.addEventListener(ev, up);
+    b.addEventListener("contextmenu", (e) => e.preventDefault());
+    return b;
+  }));
+}
+$("scr-keys-edit").addEventListener("click", () => {
+  const v = prompt("Keys for this bar, separated by spaces. Letters and digits, Esc Enter Space Tab Backspace Up Down "
+    + "Left Right Shift Ctrl Alt Win F1…F12, and combinations like Alt+Tab or Ctrl+S. Empty = the defaults.", SC.keys);
+  if (v == null) return;
+  SC.keys = v.trim() || SCR_KEYS;
+  try { localStorage.setItem("scr-keys", SC.keys); } catch (e) {}
+  scrKeys();
+});
+function scrModeBtn() { $("scr-mode").textContent = SC.mode === "touch" ? "👆 Touch" : "🖱️ Trackpad"; }
+$("scr-mode").addEventListener("click", () => {
+  SC.mode = SC.mode === "touch" ? "trackpad" : "touch";
+  try { localStorage.setItem("scr-mode", SC.mode); } catch (e) {}
+  scrModeBtn();
+});
+$("scr-hold").addEventListener("click", () => scrHold(!SC.hold));
+$("scr-quality").value = SC.quality;
+$("scr-fps").value = String(SC.fps);
+for (const id of ["scr-quality", "scr-fps"]) $(id).addEventListener("change", () => {
+  SC.quality = $("scr-quality").value; SC.fps = +$("scr-fps").value;
+  try { localStorage.setItem("scr-quality", SC.quality); localStorage.setItem("scr-fps", SC.fps); } catch (e) {}
+  scrSend({ t: "opts", quality: SC.quality, fps: SC.fps });
+});
+$("scr-full").addEventListener("click", async () => {
+  const el = $("scr"), on = !el.classList.contains("full");
+  el.classList.toggle("full", on);
+  el.classList.remove("tucked");
+  $("scr-tuck").textContent = "▾";
+  try {  // real full screen where the browser allows it (not iPhone Safari: there the page just fills the window)
+    if (on && el.requestFullscreen) {
+      await el.requestFullscreen({ navigationUI: "hide" });
+      if (SC.size[0] > SC.size[1]) await screen.orientation.lock("landscape").catch(() => {});
+    } else if (!on && document.fullscreenElement) await document.exitFullscreen();
+  } catch (e) {}
+  setTimeout(scrCursor, 300);
+});
+document.addEventListener("fullscreenchange", () => {
+  if (!document.fullscreenElement) $("scr").classList.remove("full", "tucked");
+  setTimeout(scrCursor, 300);
+});
+$("scr-tuck").addEventListener("click", () => {
+  const t = $("scr").classList.toggle("tucked");
+  $("scr-tuck").textContent = t ? "▴" : "▾";
+  setTimeout(scrCursor, 50);
+});
+// Typing: the phone's keyboard types into a hidden box; what changes there is sent on. Two spaces kept in it so
+// Backspace always has something to delete (an empty box sends nothing on phones).
+const typ = $("scr-type");
+function typReset() { typ.value = "  "; SC.typed = typ.value; try { typ.setSelectionRange(2, 2); } catch (e) {} }
+$("scr-kbd").addEventListener("pointerdown", (e) => e.preventDefault());  // keep the box focused when tapped again
+$("scr-kbd").addEventListener("click", () => {
+  if (document.activeElement === typ) { typ.blur(); return; }
+  typReset();
+  typ.focus();
+});
+typ.addEventListener("focus", () => $("scr-kbd").classList.add("on"));
+typ.addEventListener("blur", () => $("scr-kbd").classList.remove("on"));
+typ.addEventListener("input", () => {
+  const prev = SC.typed, now = typ.value;
+  let p = 0;
+  while (p < prev.length && p < now.length && prev[p] === now[p]) p++;
+  for (let i = p; i < prev.length; i++) scrSend({ t: "key", k: "Backspace" });
+  if (now.length > p) scrSend({ t: "text", s: now.slice(p) });
+  SC.typed = now;
+  if (now.length < 2) typReset();
+});
+typ.addEventListener("keydown", (e) => {
+  const special = { Enter: "Enter", Escape: "Esc", Tab: "Tab", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right" };
+  if (!special[e.key] || e.isComposing) return;
+  e.preventDefault();
+  scrSend({ t: "key", k: special[e.key] });
+  if (e.key === "Enter") typReset();
+});
+document.addEventListener("visibilitychange", () => { if (document.hidden) scrClose(); else scrConnect(); });
+window.addEventListener("resize", () => setTimeout(scrCursor, 50));
+scrKeys();
+scrModeBtn();
+
 // ---- wiring
 function chips(el, items, current, onpick) {
   put(el, items.map(([key, label]) => h("button", { class: key === current ? "on" : null, onclick: () => onpick(key) }, label)));
@@ -1210,6 +1561,8 @@ function show(tab) {
   if (tab === "log") loadLog().catch(() => {});
   if (tab === "activity" && S.events.length < 60 && !S.noMore) loadOlder().catch(() => {});
   document.body.classList.toggle("chatting", tab === "chat");
+  document.body.classList.toggle("screening", tab === "screen");
+  if (tab === "screen") { sizeChat(); scrConnect(); setTimeout(scrCursor, 50); } else scrClose();
   if (S.state && tab === "now") tick();  // the Now tab needs fresh machine/model stats (other tabs poll "lite")
   if (tab === "chat") {
     sizeChat();
@@ -1259,7 +1612,7 @@ setTheme(document.documentElement.dataset.theme || "system");
 let saved = "now";
 try { saved = localStorage.getItem("tab") || "now"; } catch (e) {}
 sizeChat();
-show(["chat", "now", "activity", "jobs", "schedule", "log"].includes(saved) ? saved : "now");
+show(["chat", "now", "activity", "jobs", "schedule", "log", "screen"].includes(saved) ? saved : "now");
 start();
 </script>
 </body>

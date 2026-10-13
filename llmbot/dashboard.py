@@ -468,6 +468,7 @@ async def state(request: web.Request) -> dict:
     return {
         **heavy,
         "now": time.time(), "timezone": core.TIMEZONE,
+        "screen": core.DASHBOARD_SCREEN and sys.platform == "win32",
         "bot": {"version": core.__version__, "started": core.STARTED_AT, "pid": os.getpid(),
                 "storage": core.STORE.describe(), "claude": core.CLAUDE_VERSION, "frontends": frontends(),
                 "default_engine": core.DEFAULT_ENGINE, "local_model": core.LLM_MODEL,
@@ -700,6 +701,18 @@ async def chat_file(request: web.Request) -> web.StreamResponse:
         "Content-Security-Policy": "sandbox", "X-Content-Type-Options": "nosniff"})
 
 
+async def screen_ws(request: web.Request) -> web.StreamResponse:
+    """The Screen tab's stream and input (llmbot/screen.py). Same-origin only: a WebSocket isn't covered by CORS."""
+    if not _authed(request):
+        return web.json_response({"error": "not signed in"}, status=401)
+    origin = request.headers.get("Origin")
+    if origin and urlsplit(origin).netloc != request.host:
+        return web.json_response({"error": "cross-site request refused"}, status=403)
+    from llmbot import screen
+
+    return await screen.serve(request, core)
+
+
 webchat: Any = None  # llmbot.webchat once started
 
 
@@ -726,6 +739,7 @@ def make_app() -> web.Application:
     app.router.add_get("/api/events", api(events))
     app.router.add_get("/api/jobs", api(jobs))
     app.router.add_get("/api/log", api(logtail))
+    app.router.add_get("/api/screen", screen_ws)
     return app
 
 

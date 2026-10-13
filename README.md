@@ -42,7 +42,7 @@ One bot process, two front ends. Both share one backend: engines, Claude Code se
   - a per-message cost breakdown.
 - **Frees the GPU:** idle models are unloaded (`/unload` does it right away).
 - **Storage:** JSON files in `data/` with no setup, or a Postgres database if you set `DATABASE_URL`. Either way it holds settings, tasks, reminders, spend, the local model's chat memory and a history of every Claude Code job with its cost.
-- **Web dashboard** for your phone: what the bot is doing right now (live Claude Code progress, local replies, voice notes), a searchable history of everything it did, Claude Code jobs with their cost, today's spend against the cap, upcoming reminders and scheduled prompts, models in GPU memory, the PC's RAM/GPU/battery, and the log. Served by the bot itself on your local network, behind an access key. `/dashboard` gives owners the link. Its **Chat** tab talks to the bot over the same Wi-Fi, so the local model still answers when the internet is down.
+- **Web dashboard** for your phone: what the bot is doing right now (live Claude Code progress, local replies, voice notes), a searchable history of everything it did, Claude Code jobs with their cost, today's spend against the cap, upcoming reminders and scheduled prompts, models in GPU memory, the PC's RAM/GPU/battery, and the log. Served by the bot itself on your local network, behind an access key. `/dashboard` gives owners the link. Its **Chat** tab talks to the bot over the same Wi-Fi, so the local model still answers when the internet is down. Its **Screen** tab shows the PC's screen on the phone and turns touches into mouse clicks, with an on-screen keyboard and key buttons you can hold (arrows, WASD, anything), for casual games and quick remote control over Wi-Fi (about 10-25 fps, a fraction of a second behind: not for fast action games, use Sunshine + Moonlight for those).
 - **PC power from chat** (`/power`, owners only): lock, sleep, hibernate, restart or shut down, with a confirmation step. The bot posts in the chat when it's back up.
 - **Guests** (`GUEST_IDS`): someone who can only check on the PC. `/status` says whether a game is being played and for how long, and how long the PC has been on. `/ping <message>` pops up on the PC's screen, on top of everything, with a sound; the reply typed there goes back to them. Nothing else works for them.
 
@@ -320,6 +320,7 @@ llmbot/
   telegram.py     Telegram front end (Bot API over httpx): renders Discord-style output, maps buttons/menus
   dashboard.py    web dashboard (aiohttp, in the bot process); dashboard.html is the page
   webchat.py      the dashboard's Chat tab: a third front end (like telegram.py), works without internet
+  screen.py       the dashboard's Screen tab: screen frames to the phone, touches and keys back (SendInput)
   store.py        storage: JSON files in data/ or Postgres
   skills.py       skills Claude Code saves after tasks that took work and gets back on similar ones
   __main__.py     python -m llmbot   (python -m llmbot --mcp-web = the web-tools MCP server Claude Code starts)
