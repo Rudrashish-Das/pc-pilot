@@ -364,7 +364,9 @@ def games():
              SimpleNamespace(info={"exe": None, "name": "notepad.exe", "create_time": now - 60})]
     saved = (psutil.process_iter, P.known_game_exes)
     psutil.process_iter = lambda attrs=None: procs
-    P.known_game_exes = lambda: {r"c:\riot games\valorant\live\shootergame\binaries\win64\valorant-win64-shipping.exe"}
+    # A path this PC doesn't have (as on CI): the name comes from the path's own capitals, not from reading the file
+    real = r"Q:\Riot Games\VALORANT\live\ShooterGame\Binaries\Win64\VALORANT-Win64-Shipping.exe"
+    P.known_game_exes = lambda: {real.lower(): real}
     check(RUNNING() == [("VALORANT", now - 600)], "path hidden by an anti-cheat: matched by file name")
     psutil.process_iter, P.known_game_exes = saved
     check(P._iso("2026-10-04T10:38:54.0333035Z") == 1791110334.0333035 or

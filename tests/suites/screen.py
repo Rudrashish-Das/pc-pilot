@@ -1,0 +1,529 @@
+"""Dashboard Screen tab (llmbot/screen.py): input turned into SendInput events (captured, not sent: the test doesn't
+move the real mouse) on the chosen screen, the real pointer drawn into a frame (no GDI objects left behind), the
+WebSocket's sign-in/origin checks, frames only on request (at most IN_FLIGHT_MAX ahead) and only when something
+changed, the arrow / real / both pointer modes, switching screens, held keys and buttons let go when the viewer leaves,
+one viewer at a time, and the reasons it refuses. Real capture of each screen is tried too when there is a desktop."""
+import asyncio, ctypes, os, sys, time
+
+os.environ["DASHBOARD_PORT"] = "0"
+from _setup import B, TMP  # noqa  (first: isolates the bot)
+import aiohttp
+from aiohttp import web
+from llmbot import dashboard as D, screen as SCR
+
+
+def check(c, label):
+    assert c, label
+    print("  ok", label)
+
+
+sent = []  # every INPUT that would have gone to SendInput
+SCR._send = lambda *inputs: sent.extend(inputs)
+
+
+def kinds():
+    out = []
+    for i in sent:
+        if i.type == 0:
+            out.append(("mouse", i.u.mi.dwFlags, i.u.mi.dx, i.u.mi.dy, ctypes_signed(i.u.mi.mouseData)))
+        else:
+            out.append(("key", i.u.ki.wVk, i.u.ki.wScan, i.u.ki.dwFlags))
+    sent.clear()
+    return out
+
+
+def ctypes_signed(v):
+    return v - 2**32 if v >= 2**31 else v
+
+
+PHONE = ("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Mobile "
+         "Safari/537.36")
+LAPTOP = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36 Edg/131.0"
+MON0 = {"left": 0, "top": 0, "width": 1920, "height": 1080, "primary": True}
+MON1 = {"left": -1280, "top": -200, "width": 1280, "height": 1024, "primary": False}
+
+
+async def main():
+    if sys.platform != "win32":
+        print("Windows only: skipped")
+        return
+    print("== input")
+    inp = SCR.Input(MON0)
+    inp.handle({"t": "click", "b": "left", "x": 0.5, "y": 0.5})
+    k = kinds()
+    check(k[0][0] == "mouse" and k[0][1] == SCR.MOVE | SCR.ABSOLUTE | SCR.VIRTUALDESK and 0 < k[0][2] < 65535
+          and [x[1] for x in k[1:]] == [0x2, 0x4], "tap: move there, then left down + up")
+    inp.handle({"t": "click", "b": "right"})
+    check([x[1] for x in kinds()] == [0x8, 0x10], "right click where the pointer is")
+    inp.handle({"t": "down", "b": "left", "x": 0, "y": 0})
+    k = kinds()
+    check(k[-1][1] == 0x2 and inp.buttons == {"left"}, "drag start: button remembered")
+    inp.handle({"t": "rel", "dx": 5, "dy": -99999})
+    check(kinds() == [("mouse", SCR.MOVE, 5, -2000, 0)], "trackpad move: relative, clamped")
+    inp.handle({"t": "wheel", "dy": -120})
+    check(kinds() == [("mouse", SCR.WHEEL, 0, 0, -120)], "wheel down (negative delta survives the DWORD)")
+    inp.handle({"t": "key", "k": "Up", "a": "down"})
+    k = kinds()
+    check(k[0][0] == "key" and k[0][2] and k[0][3] & SCR.KEY_SCANCODE and k[0][3] & SCR.KEY_EXTENDED
+          and inp.keys == {0x26}, "arrow down: scan code, extended, remembered")
+    inp.handle({"t": "key", "k": "Alt+Tab"})
+    k = kinds()
+    check(len(k) == 4 and not k[0][3] & SCR.KEY_UP and k[3][3] & SCR.KEY_UP and inp.keys == {0x26},
+          "combination tapped: both down, released in reverse")
+    inp.handle({"t": "key", "k": "Nope+A"})
+    check(kinds() == [], "unknown key: nothing sent")
+    inp.handle({"t": "text", "s": "hi😀\n"})
+    k = kinds()
+    units = [x[2] for x in k if x[3] & SCR.KEY_UNICODE and not x[3] & SCR.KEY_UP]
+    check(units == [ord("h"), ord("i"), 0xD83D, 0xDE00] and len(k) == 10, "text as Unicode (emoji = 2 units), newline = Enter")
+    inp.release()
+    k = kinds()
+    check({x[1] for x in k if x[0] == "mouse"} == {0x4} and any(x[0] == "key" and x[3] & SCR.KEY_UP for x in k)
+          and not inp.buttons and not inp.keys, "release: held button and key let go")
+    check(SCR.vk_of("w") == 0x57 and SCR.vk_of("F5") == 0x74 and SCR.vk_of("esc") == 0x1B and SCR.vk_of("é") is None,
+          "key names")
+    inp = SCR.Input(MON1)
+    inp.handle({"t": "move", "x": 0, "y": 0})
+    check(kinds()[0][2:4] == SCR.to_absolute(0, 0, MON1) != SCR.to_absolute(0, 0, MON0),
+          "a point on another screen maps to that screen")
+    check(SCR.on_monitor((1, 1919, 1079), MON0) == (1, 1) and SCR.on_monitor((1, -1280, -200), MON1) == (0, 0) and SCR.on_monitor((1, -5, 3), MON0) is None
+          and SCR.on_monitor(None, MON0) is None, "pointer position per screen; elsewhere or hidden = none")
+
+    print("== the real pointer drawn into a frame")
+    from PIL import Image
+    user32 = ctypes.WinDLL("user32")
+    user32.LoadCursorW.restype = ctypes.c_void_p
+    arrow = user32.LoadCursorW(None, ctypes.c_void_p(32512))  # IDC_ARROW
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    user32.GetGuiResources.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    me = kernel32.GetCurrentProcess()
+    img = Image.new("RGB", (200, 100), (40, 90, 160))
+    SCR.draw_pointer(img, MON0, (arrow, 100, 50))
+    gdi0 = user32.GetGuiResources(me, 0)
+    for _ in range(300):
+        SCR.draw_pointer(img, MON0, (arrow, 100, 50))
+    check(user32.GetGuiResources(me, 0) == gdi0, f"300 draws, no GDI objects left behind ({gdi0})")
+    check(img.getpixel((101, 52)) != (40, 90, 160) and img.getpixel((150, 10)) == (40, 90, 160),
+          "drawn at the pointer, nowhere else")
+    edge = Image.new("RGB", (50, 50), (40, 90, 160))
+    SCR.draw_pointer(edge, MON0, (arrow, 48, 48))
+    SCR.draw_pointer(edge, MON0, (arrow, -40, -40))
+    check(True, "half off the edge, or off it entirely: no error")
+
+    print("== only what changed")
+    import numpy as np
+    a = np.zeros((720, 1280, 3), np.uint8)
+    b = a.copy()
+    check(SCR.changed_rects(a, b) == [], "nothing changed: nothing to send")
+    b[10, 10, 2] = 1
+    b[100:300, 200:330] = 9
+    b[715, 1279] = 3
+    check(SCR.changed_rects(a, b) == [(0, 0, 64, 64), (192, 64, 192, 256), (1216, 704, 64, 16)],
+          "one pixel = one tile; a block = one rectangle of tiles; the edge tile clipped")
+    odd = np.zeros((601, 957, 3), np.uint8)
+    odd2 = odd.copy()
+    odd2[600, 956] = 1
+    check(SCR.changed_rects(odd, odd2) == [(896, 576, 61, 25)], "odd sizes (no 8-byte rows): the slow path agrees")
+
+    # A page's picture rebuilt from what grab() sends (whole frames, then tiles drawn over) stays the real one
+    import io, random
+    from PIL import Image as PILImage
+
+    class FakeCap:
+        def __init__(self, mon):
+            self.mon, self.how, self.img = mon, "fake", None
+
+        def image(self, fresh_only):
+            return self.img.copy()
+
+        def close(self):
+            pass
+
+    rng = random.Random(7)
+    mon = {"left": 0, "top": 0, "width": 1280, "height": 720, "primary": True}
+    SCR._cap = FakeCap(mon)
+    src = np.zeros((720, 1280, 3), np.uint8)
+    src[:] = np.linspace(0, 255, 1280, dtype=np.uint8)[None, :, None]  # a gradient: wrong placement would show
+    page, ref, sizes = None, {}, []
+    for step in range(40):
+        for _ in range(rng.randint(0, 4)):  # a few things move
+            y, x = rng.randrange(0, 700), rng.randrange(0, 1260)
+            src[y:y + rng.randint(1, 120), x:x + rng.randint(1, 200)] = rng.randrange(256)
+        SCR._cap.img = PILImage.fromarray(src)
+        parts, *_ = SCR.grab(mon, 1280, 90, False, None, ref, step == 0)
+        for x, y, w, h, jpeg in parts or []:
+            tile = np.asarray(PILImage.open(io.BytesIO(jpeg)).convert("RGB"))
+            page = tile.copy() if page is None else page
+            page[y:y + h, x:x + w] = tile
+        sizes.append(sum(len(p[4]) for p in parts or []))
+    err = np.abs(page.astype(int) - src.astype(int)).mean()
+    check(err < 2, f"the page's picture rebuilt from tiles matches the screen (mean error {err:.2f} of 255)")
+    check(sum(sizes[1:]) / 39 < sizes[0] / 3, f"tiles are much smaller than whole frames ({sizes[0] // 1024} KB "
+          f"whole, {sum(sizes[1:]) // 39 // 1024} KB on average after)")
+    SCR._cap = None
+
+    print("== capturing the real screens")
+    try:
+        for i, mon in enumerate(SCR.monitors()):
+            ref = {}
+            parts, w, h, size, ms = SCR.grab(mon, 960, 50, False, SCR.pointer(), ref, True)
+            assert len(parts) == 1 and parts[0][4][:2] == b"\xff\xd8" and parts[0][2:4] == size, parts[0][:4]
+            assert (w, h) == (mon["width"], mon["height"]), mon
+            print(f"  ok screen {i + 1}: {w}x{h} via {SCR._cap.how}, {len(parts[0][4]) // 1024} KB in {ms:.0f} ms")
+            again, *_ = SCR.grab(mon, 960, 50, False, None, ref, False)
+            print(f"  ok   then only what changed: {sum(len(p[4]) for p in again or []) // 1024} KB in "
+                  f"{len(again or [])} part(s)")
+        SCR._reset_capture()
+        cap = SCR.Capture(SCR.monitors()[0])
+        if cap.image(False) is not None and cap.how == "dxgi":
+            import time
+            cap.cam._duplicator.update_frame = lambda wait_for_frame=False: False  # as Windows does at a UAC prompt
+            t0 = time.monotonic()
+            img = cap.image(True)
+            check(img is not None and cap.how == "gdi" and time.monotonic() - t0 < 1,
+                  f"GPU capture lost the screen: a GDI frame at once, no endless retry ({time.monotonic() - t0:.2f} s)")
+            cap.dxgi_at = 0  # as if DXGI_RETRY had passed
+            check(cap.image(False) is not None and cap.how == "dxgi", "and back on the GPU capture later")
+        cap.close()
+    except AssertionError:
+        raise
+    except Exception as e:  # e.g. CI without a desktop: the WebSocket checks below use a stand-in
+        print(f"  (skipped: {type(e).__name__}: {e})")
+
+    print("== the capture process")
+    import psutil
+    try:
+        mon = SCR.monitors()[0]
+        ref = {}
+        t0 = time.monotonic()
+        parts, w, h, size, ms, how = SCR._call(("grab", 1, mon, 960, 50, False, None, True))
+        first = time.monotonic() - t0
+        check(parts and parts[0][4][:2] == b"\xff\xd8" and SCR._proc.is_alive() and how in ("dxgi", "gdi"),
+              f"a frame from the capture process via {how} (started in {first:.1f} s)")
+        times = []
+        for _ in range(20):
+            t0 = time.monotonic()
+            SCR._call(("grab", 1, mon, 960, 50, False, None, True))
+            times.append(time.monotonic() - t0)
+        print(f"  ok   whole frames through it: {sum(times) / len(times) * 1000:.0f} ms each")
+        pid = SCR._proc.pid
+        psutil.Process(pid).kill()  # it crashed
+        try:
+            SCR._call(("grab", 1, mon, 960, 50, False, None, True))
+            check(False, "a dead process is noticed")
+        except RuntimeError as e:
+            check("stopped" in str(e) and SCR._proc is None, f"a dead process is noticed ({e})")
+        parts, *_ = SCR._call(("grab", 1, mon, 960, 50, False, None, True))
+        check(parts and SCR._proc.pid != pid, "and the next frame starts a fresh one")
+        import logging
+
+        class Lines(logging.Handler):
+            def __init__(self):
+                super().__init__()
+                self.got = []
+
+            def emit(self, record):
+                self.got.append(record.getMessage())
+
+        lines = Lines()
+        SCR.log.addHandler(lines)
+        level = SCR.log.level
+        SCR.log.setLevel(logging.INFO)  # the bot logs at INFO; the tests' default is WARNING
+        odd = {"left": 0, "top": 0, "width": 100, "height": 100, "primary": False}  # no GPU output is exactly this
+        *_, how = SCR._call(("grab", 2, odd, 960, 50, False, None, True))
+        SCR.log.removeHandler(lines)
+        SCR.log.setLevel(level)
+        check(how == "gdi" and any(x.startswith("Capture process: Screen: DXGI capture not available") for x in lines.got),
+              f"the capture process's log lines reach the bot's log: {lines.got[:1]}")
+        SCR._call(("done", 2, False))
+        SCR._call(("done", 1, True))
+        pid = SCR._proc.pid
+        SCR._closing = True  # the bot is stopping
+        SCR._stop_worker()
+        check(not psutil.pid_exists(pid) and SCR._proc is None, "stopped: the process is gone")
+        try:
+            SCR._call(("grab", 1, mon, 960, 50, False, None, True))
+            check(False, "no new capture process while the bot stops")
+        except RuntimeError as e:
+            check("stopping" in str(e) and SCR._proc is None, "a viewer still watching while the bot stops can't "
+                  "start a new capture process")
+        SCR._closing = False
+    except AssertionError:
+        raise
+    except Exception as e:  # CI without a desktop
+        print(f"  (skipped: {type(e).__name__}: {e})")
+        SCR._stop_worker()
+
+    print("== WebSocket")
+    SCR.WORKER = False  # the stand-in grab() below runs in this process
+    G = {"static": False, "n": 0, "calls": []}
+
+    def fake_grab(mon, width, quality, fresh_only, draw, ref, full):
+        G["calls"].append((mon, fresh_only, draw, full))
+        if G.get("gdi_still") and not full:
+            return [], mon["width"], mon["height"], (640, 360), 30.0
+        if G["static"] and fresh_only and not full:
+            return None, mon["width"], mon["height"], (0, 0), 0.0
+        G["n"] += 1
+        body = f"F{G['n']}".encode()
+        if full or G["n"] % 2:  # the whole frame, or (every other one) two changed tiles
+            return [(0, 0, 640, 360, body)], mon["width"], mon["height"], (640, 360), 4.0
+        return ([(0, 0, 64, 64, body), (128, 64, 64, 64, b"T")], mon["width"], mon["height"], (640, 360), 2.0)
+
+    PTR = [(7, 480, 810)]
+    SCR.grab = fake_grab
+    SCR.monitors = lambda: [MON0, MON1]
+    SCR.pointer = lambda: PTR[0]
+    SCR.REFRESH = 60
+    B.DASHBOARD_SCREEN = True
+    D.core, D._key = B, "k" * 24
+    runner = web.AppRunner(D.make_app())
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    url = f"ws://127.0.0.1:{port}/api/screen"
+    with_timeout = lambda c: asyncio.wait_for(c, 3)
+
+    async def quiet(ws, seconds=0.4):
+        try:
+            return await asyncio.wait_for(ws.receive(), seconds)
+        except asyncio.TimeoutError:
+            return None
+
+    async def frame(ws):
+        await ws.send_json({"t": "next"})
+        head = await with_timeout(ws.receive_json())
+        body = await with_timeout(ws.receive_bytes()) if head.get("frame") else None
+        return head, body
+
+    async with aiohttp.ClientSession() as s:
+        try:
+            await s.ws_connect(url)
+            check(False, "unauthenticated refused")
+        except aiohttp.WSServerHandshakeError as e:
+            check(e.status == 401, "no key: refused before the upgrade")
+        auth = {"Authorization": f"Bearer {D._key}"}
+        try:
+            await s.ws_connect(url, headers={**auth, "Origin": "http://evil.example"})
+            check(False, "cross-site refused")
+        except aiohttp.WSServerHandshakeError as e:
+            check(e.status == 403, "another site's page can't open it")
+
+        check(SCR.device_name(PHONE) == "Android phone · Chrome" and SCR.device_name(LAPTOP) == "Windows PC · Edge"
+              and SCR.device_name("") == "a device", "device names from the browser")
+        check(D.screen_status() is None, "nobody watching: no status")
+        ws = await s.ws_connect(url, headers={**auth, "User-Agent": PHONE})
+        check(any(e["text"] == "Screen control opened from Android phone · Chrome (127.0.0.1)" for e in B._events),
+              "opening is in the activity feed, with the device")
+        m = await with_timeout(ws.receive_json())
+        check(m == {"monitors": [{"w": 1920, "h": 1080, "primary": True}, {"w": 1280, "h": 1024, "primary": False}],
+                    "monitor": 0}, "the screens are listed first")
+        check(await quiet(ws) is None, "no frame until the page asks")
+        head, body = await frame(ws)
+        check(head == {"screen": [1920, 1080], "cursor": list(SCR.on_monitor(PTR[0], MON0)), "frame": True,
+                       "size": [640, 360], "parts": [[0, 0, 640, 360, 2]], "ms": 4.0} and body == b"F1"
+              and G["calls"][-1][2] is None and G["calls"][-1][3] is True,
+              "first frame: the whole picture; arrow mode: pointer as a position, not drawn in")
+        head, body = await frame(ws)
+        check(head["parts"] == [[0, 0, 64, 64, 2], [128, 64, 64, 64, 1]] and body == b"F2T" and G["calls"][-1][3] is False,
+              "then only what changed: each tile's place and length, their JPEGs in one message")
+        G["static"] = True
+        await ws.send_json({"t": "next"})
+        check(await quiet(ws) is None, "still screen, still pointer: nothing sent")
+        PTR[0] = (7, 960, 540)
+        head = await with_timeout(ws.receive_json())
+        check(head == {"screen": [1920, 1080], "cursor": list(SCR.on_monitor(PTR[0], MON0)), "frame": False}, "pointer moved: its position only")
+        PTR[0] = None
+        head, _ = await frame(ws)
+        check(head["cursor"] is None and not head["frame"], "pointer hidden (a game hid it): the arrow goes")
+
+        await ws.send_json({"t": "opts", "cursor": "real"})
+        PTR[0] = (7, 480, 810)
+        head, body = await frame(ws)
+        check(head["frame"] and head["cursor"] is None and G["calls"][-1][2] == (7, 480, 810),
+              "real pointer: drawn into the frame, no arrow")
+        n = G["n"]
+        PTR[0] = (8, 481, 810)  # moved a pixel and changed shape, screen still
+        head, body = await frame(ws)
+        check(head["frame"] and G["n"] == n + 1 and G["calls"][-1][1] is False, "pointer moved: a new frame drawn")
+        await ws.send_json({"t": "next"})
+        check(await quiet(ws) is None, "real pointer still: nothing sent")
+        await ws.send_json({"t": "opts", "cursor": "both"})
+        head = await with_timeout(ws.receive_json())
+        await with_timeout(ws.receive_bytes())
+        check(head["cursor"] == list(SCR.on_monitor(PTR[0], MON0)) and head["frame"] and G["calls"][-1][2] == (8, 481, 810),
+              "both: drawn in, and the arrow's position")
+
+        await ws.send_json({"t": "opts", "cursor": "arrow", "monitor": 1})
+        m = await with_timeout(ws.receive_json())
+        check(m["monitor"] == 1, "switched to screen 2")
+        head, body = await frame(ws)
+        check(head["screen"] == [1280, 1024] and G["calls"][-1][0] == MON1 and head["cursor"] is None,
+              "its frames, and the pointer isn't on it")
+        await ws.send_json({"t": "move", "x": 0, "y": 0})
+        await asyncio.sleep(0.1)
+        check(kinds()[0][2:4] == SCR.to_absolute(0, 0, MON1), "touches land on screen 2")
+        await ws.send_json({"t": "opts", "monitor": 9})
+        m = await with_timeout(ws.receive_json())
+        check(m["monitor"] == 0, "a screen that's gone: back to the main one")
+        head, _ = await frame(ws)
+
+        G["static"] = False
+        for _ in range(10):
+            await ws.send_json({"t": "next"})
+        got = 0
+        while (msg := await quiet(ws, 0.5)) is not None:
+            got += msg.type == aiohttp.WSMsgType.BINARY
+        check(got == SCR.IN_FLIGHT_MAX, f"10 requests at once: only {SCR.IN_FLIGHT_MAX} frames ahead ({got})")
+        await ws.send_json({"t": "opts", "fps": "lots", "quality": "ultra"})
+        await ws.send_json({"t": "next"})
+        check(await quiet(ws) is not None, "bad settings ignored, still streaming")
+        live = D.screen_status()
+        check(live and live["device"] == "Android phone · Chrome" and live["who"] == "127.0.0.1" and live["fps"] > 0
+              and live["kbps"] >= 0 and live["monitor"] == 1 and live["monitors"] == 2 and live["cursor"] == "arrow",
+              f"status while streaming: {live}")
+        G["gdi_still"] = True  # GDI on a still screen: compared, nothing changed ([]), every time
+        await ws.send_json({"t": "opts", "fps": 30})  # (a forced whole frame first)
+        for _ in range(3):  # requests outstanding, as a page keeps them
+            await ws.send_json({"t": "next"})
+        await asyncio.sleep(0.5)
+        n0 = len(G["calls"])
+        await asyncio.sleep(1)
+        looks = len(G["calls"]) - n0
+        check(2 <= looks <= 6, f"GDI, still screen: it looks a few times a second, not 30 ({looks} in 1 s)")
+        n0, t0 = len(G["calls"]), time.monotonic()
+        await ws.send_json({"t": "move", "x": 0.5, "y": 0.5})
+        while len(G["calls"]) == n0 and time.monotonic() - t0 < 1:
+            await asyncio.sleep(0.005)
+        check(time.monotonic() - t0 < 0.1, f"input: it looks again at once ({(time.monotonic() - t0) * 1000:.0f} ms)")
+        G["gdi_still"] = False
+        while await quiet(ws, 0.2) is not None:
+            pass
+        await ws.send_json({"t": "key", "k": "Space", "a": "down"})
+        await asyncio.sleep(0.1)
+        kinds()
+
+        ws2 = await s.ws_connect(url, headers={**auth, "User-Agent": LAPTOP})
+        m = await with_timeout(ws2.receive_json())
+        check(m["busy"]["device"] == "Android phone · Chrome" and (await with_timeout(ws2.receive())).type
+              == aiohttp.WSMsgType.CLOSE, "another device is told who's watching, and not connected")
+        await ws.send_json({"t": "next"})
+        check(await quiet(ws) is not None and not kinds(), "the first keeps streaming, Space still held")
+
+        resets = []
+        real_reset = SCR._reset_capture
+        SCR._reset_capture = lambda: resets.append(1)
+        ws2 = await s.ws_connect(url + "?take=1&tab=L", headers={**auth, "User-Agent": LAPTOP})
+        while True:  # past the frames still on their way
+            raw = await with_timeout(ws.receive())
+            if raw.type == aiohttp.WSMsgType.TEXT and "error" in (msg := raw.json()):
+                break
+        check(msg == {"error": "Taken over by Windows PC · Edge (127.0.0.1).", "taken": True},
+              "Take over: the first is told by whom")
+        await asyncio.sleep(0.2)
+        k = kinds()
+        check(any(x[0] == "key" and x[3] & SCR.KEY_UP for x in k), "the first viewer's held Space was let go")
+        check(D.screen_status()["device"] == "Windows PC · Edge", "status follows the new viewer")
+        check(not resets, "the replaced viewer leaving doesn't reset the capture the new one streams from")
+        other = await s.ws_connect(url + "?tab=M", headers={**auth, "User-Agent": LAPTOP})
+        m = await with_timeout(other.receive_json())
+        check("busy" in m and D.screen_status()["device"] == "Windows PC · Edge",
+              "another tab of the same browser is told it's busy: two tabs can't keep taking it from each other")
+        ws3 = await s.ws_connect(url + "?tab=L", headers={**auth, "User-Agent": LAPTOP})
+        while True:
+            raw = await with_timeout(ws2.receive())
+            if raw.type == aiohttp.WSMsgType.TEXT and "error" in (msg := raw.json()):
+                break
+        check(msg["error"] == "This device was disconnected.", "the same tab reconnecting (a reload) needn't ask")
+        await ws3.close()
+        await asyncio.sleep(0.2)
+        check(D.screen_status() is None, "closed: no status")
+        check(len(resets) == 1, f"the last viewer leaving frees the capture ({len(resets)})")
+        SCR._reset_capture = real_reset
+        first_timer = SCR._idle
+        SCR._schedule_idle_stop(asyncio.get_running_loop())
+        check(first_timer is not None and first_timer.cancelled() and not SCR._idle.cancelled(),
+              "one idle timer: a new one replaces the old (an earlier viewer's can't stop the process early)")
+        SCR._idle.cancel()
+
+        # A phone that dropped off the Wi-Fi: connected, then silent (a raw socket: aiohttp's client would answer)
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        lines = ["GET /api/screen HTTP/1.1", f"Host: 127.0.0.1:{port}", "Upgrade: websocket", "Connection: Upgrade",
+                 "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Version: 13",
+                 f"Authorization: Bearer {D._key}", f"User-Agent: {PHONE}", "", ""]
+        lines[0] = "GET /api/screen?tab=S HTTP/1.1"
+        writer.write("\r\n".join(lines).encode())
+        await writer.drain()
+        check(b" 101 " in await with_timeout(reader.readline()), "(a silent viewer connected)")
+        await asyncio.sleep(0.2)
+        t0 = asyncio.get_running_loop().time()
+        ws5 = await s.ws_connect(url + "?tab=S", headers={**auth, "User-Agent": PHONE})
+        await with_timeout(ws5.receive_json())
+        head, body = await frame(ws5)
+        waited = asyncio.get_running_loop().time() - t0
+        check(body and waited < 1, f"a viewer that went silent doesn't hold up the next one ({waited:.2f} s)")
+        await ws5.close()
+        writer.transport.abort()
+
+        print("== sound")
+        import threading, time
+        try:
+            import soundcard
+            soundcard.default_speaker()
+            speakers = True
+        except Exception as e:  # e.g. CI: no audio device (0x80070490, element not found)
+            print(f"  (real recording skipped: no speakers: {type(e).__name__}: {e})")
+            speakers = False
+        if speakers:
+            stop, failed = threading.Event(), []
+            real = threading.Thread(target=SCR._record, args=(asyncio.get_running_loop(), lambda pcm: None, stop, failed))
+            real.start()
+            await asyncio.sleep(0.6)
+            stop.set()
+            await asyncio.get_running_loop().run_in_executor(None, real.join, 3)
+            check(not real.is_alive() and not failed, f"the real loopback recording starts and stops {failed or ''}")
+
+        def fake_record(loop, put, stop, failed):
+            while not stop.is_set():
+                loop.call_soon_threadsafe(put, b"\x01\x00" * 1920)  # 20 ms of stereo 16-bit
+                time.sleep(0.02)
+
+        SCR._record = fake_record
+        aurl = url + "/audio"
+        a = await s.ws_connect(aurl + "?tab=V", headers={**auth, "User-Agent": PHONE})
+        msg = await with_timeout(a.receive_json())
+        check("Open the Screen tab" in msg["error"], "nobody watching: no sound")
+        v = await s.ws_connect(url + "?tab=V", headers={**auth, "User-Agent": PHONE})
+        await with_timeout(v.receive_json())
+        for q, ua, what in [("?tab=X", PHONE, "another tab"), ("", PHONE, "no tab"), ("?tab=X", LAPTOP, "another device")]:
+            a = await s.ws_connect(aurl + q, headers={**auth, "User-Agent": ua})
+            msg = await with_timeout(a.receive_json())
+            check("Open the Screen tab" in msg["error"], f"{what} can't listen in")
+        a = await s.ws_connect(aurl + "?tab=V", headers={**auth, "User-Agent": PHONE})
+        check(await with_timeout(a.receive_json()) == {"rate": 48000, "channels": 2}
+              and len(await with_timeout(a.receive_bytes())) == 3840, "the watching device gets the sound")
+        check(D.screen_status()["audio"] is True and "tab" not in D.screen_status(), "status: sound on (no tab id)")
+        await v.close()
+        while (await with_timeout(a.receive())).type not in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED):
+            pass
+        await asyncio.sleep(0.3)
+        check(not any(t.name == "screen-audio" for t in threading.enumerate()), "the screen closed: sound stops, its thread ends")
+
+        B.DASHBOARD_SCREEN = False
+        ws3 = await s.ws_connect(url, headers=auth)
+        msg = await with_timeout(ws3.receive_json())
+        check(D.screen_status() is None and "DASHBOARD_SCREEN" in msg["error"], "turned off: says how to turn it on")
+        B.DASHBOARD_SCREEN = True
+        B._background = True
+        ws4 = await s.ws_connect(url, headers=auth)
+        msg = await with_timeout(ws4.receive_json())
+        check("signed in" in msg["error"], "session 0 after a boot: asks to sign in")
+        B._background = None
+    await runner.cleanup()
+
+
+if __name__ == "__main__":  # not in the capture process, which imports this file again
+    asyncio.run(main())
+    print("\nALL SCREEN CHECKS PASSED")

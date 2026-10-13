@@ -25,16 +25,17 @@ GENERIC_HOSTS = {"javaw.exe", "java.exe", "python.exe", "pythonw.exe"}  # run ga
 JUNK_PRODUCT = re.compile(r"java|unreal|unity|microsoft|bootstrap", re.I)
 SUFFIXES = re.compile(r"(?:-win64-shipping|_x64|x64|64|_dx1[12]|_vulkan|vk|_f|_rwdi)$", re.I)
 
-_known: tuple[float, set[str]] = (-1e9, set())
+_known: tuple[float, dict[str, str]] = (-1e9, {})
 _names: dict[str, str] = {}
 
 
-def known_game_exes() -> set[str]:
-    """Executables Windows' Game Bar has recognised as games on this PC (lowercase full paths)."""
+def known_game_exes() -> dict[str, str]:
+    """Executables Windows' Game Bar has recognised as games on this PC: lowercase full path -> the path as Windows
+    has it (its capitals name the game when the file can't be read: an anti-cheat hiding the process's path)."""
     global _known
     if time.monotonic() - _known[0] < GAMES_REFRESH:
         return _known[1]
-    found = set()
+    found: dict[str, str] = {}
     if sys.platform == "win32":
         import winreg
         try:
@@ -42,12 +43,13 @@ def known_game_exes() -> set[str]:
                 for i in range(winreg.QueryInfoKey(root)[0]):
                     try:
                         with winreg.OpenKey(root, winreg.EnumKey(root, i)) as k:
-                            found.add(str(winreg.QueryValueEx(k, "MatchedExeFullPath")[0]).lower())
+                            path = str(winreg.QueryValueEx(k, "MatchedExeFullPath")[0])
+                            found[path.lower()] = path
                     except OSError:
                         pass
         except OSError:
             pass
-    _known = (time.monotonic(), {p for p in found if Path(p).name not in GENERIC_HOSTS})
+    _known = (time.monotonic(), {low: p for low, p in found.items() if Path(low).name not in GENERIC_HOSTS})
     return _known[1]
 
 
@@ -87,7 +89,8 @@ def game_name(exe: str) -> str:
     return name
 
 
-def is_game(exe: str, known: set[str]) -> bool:
+def is_game(exe: str, known) -> bool:
+    """known: lowercase full paths (known_game_exes(), or any collection of them)."""
     low = exe.lower()
     if low in known:
         return True
@@ -102,7 +105,7 @@ def running_games() -> list[tuple[str, float]]:
     except ImportError:
         return []
     known, games = known_game_exes(), {}
-    by_name = {Path(k).name: k for k in known}
+    by_name = {Path(low).name: path for low, path in known.items()}
     for p in psutil.process_iter(["exe", "name", "create_time"]):
         exe, started = p.info.get("exe"), p.info.get("create_time")
         if not exe:  # path hidden (an anti-cheat protecting the game): the file name still matches a known game

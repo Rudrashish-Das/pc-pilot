@@ -21,6 +21,10 @@ dependencies = [
     "ddgs>=9.0",
     "tzdata; sys_platform == 'win32'",
     "faster-whisper>=1.1",
+    "mss>=9",  # the dashboard's Screen tab: screen capture
+    "Pillow>=10",  # ...and its JPEG frames
+    "dxcam>=0.3; sys_platform == 'win32'",  # ...and fast capture (DXGI); mss is the fallback
+    "soundcard>=0.4",  # ...and its sound
     "psycopg[binary]>=3.2",
 ]
 
@@ -34,7 +38,7 @@ llmbot = "llmbot.core:main"
 packages = ["llmbot"]
 
 [tool.setuptools.package-data]
-llmbot = ["*.html", "*.png"]
+llmbot = ["*.html", "*.png", "*.mp4"]
 
 [tool.setuptools.dynamic]
 version = { attr = "llmbot.__version__" }

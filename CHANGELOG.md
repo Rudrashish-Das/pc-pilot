@@ -2,6 +2,25 @@
 
 Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `bot_v22.py`). From 0.23.0 on, git history is the record.
 
+## Unreleased
+- Fixed: `/status` could name a game in lowercase ("valorant") when an anti-cheat hides its path and its file can't be read: Windows' list of games was kept lowercased, so the name came from the lowercased folder. The test for it only passed on a PC with VALORANT installed, which is why CI failed on every push since 0.25.0.
+- 🎮 **Dashboard Screen tab**: the PC's screen on your phone, controlled by touch, for casual games and quick remote control over the same Wi-Fi.
+  - Touch mode: tap clicks there, drag drags, long press right-clicks. Trackpad mode: drag moves the pointer, tap clicks. Tap, then touch again and hold: the button stays down while your finger does (drag a window by its title bar, or lift at once for a double click), as on a laptop's trackpad; like one, a tap's click waits ~0.3 s for that second touch. Two fingers scroll; a two-finger tap right-clicks. ✊ Hold keeps the left button down. A mouse on a PC browser works as itself.
+  - ⌨️ types with the phone's keyboard. The key bar is yours to choose (✎): any letters, Esc, Enter, arrows, F-keys, combinations like Alt+Tab, held down as long as your finger is on them, so walking with arrows or WASD works.
+  - Any of the PC's screens (a picker appears with more than one); touches land on the one shown.
+  - Mouse pointer: an arrow drawn by the phone (moves at once), the real one drawn into the picture as it looks on the PC (hand, text cursor, a game's own), or both, like AnyDesk. Hidden when Windows hides it, as many games do.
+  - 🔊 Sound: what the PC is playing, on the phone, about 0.1 s behind (~1.5 Mbit/s while something plays; silence isn't sent). The PC keeps playing it too.
+  - Full screen (landscape on Android; the bar tucks away), Low/Medium/High quality, 15/30/60 fps. Captured on the GPU (DXGI, a few ms a frame, nothing to do while the screen is still), with GDI as the fallback. Two frames are on their way at a time, so the Wi-Fi's round trip doesn't slow it down, and frames only go when something changed, so a slow connection gets fewer frames instead of falling behind. About 20-30 fps over home Wi-Fi.
+  - One device at a time. Another one sees who's watching (which phone or PC, since when) with a Take over button, and starts by itself once the screen is free; the same device coming back (a reload) just reconnects. Held keys and buttons are let go when a device disconnects. The Now tab shows who's watching, on which screen, the frame rate and bitrate, and whether sound is on; the activity feed has each open and close with the device.
+  - It can't show the lock screen or UAC prompts (the picture comes back by itself after), can't click into programs run as administrator (unless the bot is too), and a few exclusive-fullscreen games show black: use borderless or windowed mode. Fast action games want Sunshine + Moonlight instead.
+  - Only the parts of the screen that changed are sent (64 px tiles, drawn over what the phone has), so a casual game uses a fraction of the Wi-Fi: about 1.5 Mbit/s instead of 12 at Medium in testing, and a pointer move is a few KB instead of a whole frame.
+  - The phone's screen stays on while streaming, as with a video (Wake Lock on https; a tiny silent looping video on plain http).
+  - The sound's buffer adapts: a dropout makes it a little longer (up to 0.25 s), and it shrinks back while the Wi-Fi is steady.
+  - Capture and encoding run in their own process (started with the first viewer, gone 2 minutes after the last): inside the bot they took turns with everything else for Python's interpreter lock, 57 ms a frame instead of 17. A stuck capture can't freeze the stream any more: the process is replaced.
+  - A stats line while streaming: fps, Mbit/s, and the time per frame on the PC and on the phone (also on the Now tab).
+  - `DASHBOARD_SCREEN=false` turns it off.
+  - New dependencies: `mss`, `Pillow`, `dxcam` and `soundcard` (`pip install -r requirements.txt`).
+
 ## 0.25.0
 - Docs: a [beginner guide](docs/BEGINNER_GUIDE.md) (Telegram, step by step, no coding), and README instructions for running Claude Code on free cloud models: OpenRouter `:free` models, Ollama Cloud, or other free keys through a LiteLLM proxy.
 - Fixed: Claude Code's login on the PC kept getting wiped ("OAuth session expired and could not be refreshed"). The bot's skill check, run at every start, killed `claude` as soon as it had listed the skills. When the login's token had expired, that run was renewing it at that moment, and killing it lost the new tokens after the old refresh token had already been retired. The next run then couldn't refresh and Claude Code logged out. The check now lets the run finish (a one-word Haiku reply) and only stops a stuck one after 90 s.
