@@ -2482,15 +2482,18 @@ async def refresh_cc_skills(max_age: float = 30) -> list[str]:
     /skill <name> said it didn't exist until some later job ran."""
     async with _cc_skills_lock:
         now = time.monotonic()
-        # a failed lookup takes up to 60 s; without the pause every /skills or /skill typo started another one
+        # a failed lookup takes up to 90 s; without the pause every /skills or /skill typo started another one
         if now - _cc_skills_at > max_age and now - _cc_skills_failed_at > CC_SKILLS_RETRY:
             await discover_cc_skills()
     return _cc_skills
 
 
 async def discover_cc_skills() -> list[str]:
-    """Ask the Claude Code CLI which skills it has: it lists them in its first (init) event, and the process is
-    stopped right there, before the model has answered (a few tokens at most)."""
+    """Ask the Claude Code CLI which skills it has: it lists them in its first (init) event. The run is left to
+    finish (haiku answering "ok", a few tokens) instead of being stopped at that event: the first run after the OAuth
+    token expired renews it right then, and killing it there lost the renewed tokens after the server had already
+    retired the old refresh token. The next run then couldn't refresh and Claude Code wiped the login ("OAuth
+    session expired and could not be refreshed")."""
     binary = claude_bin()
     if not binary or not CC_SKILLS:
         return _cc_skills
@@ -2508,6 +2511,8 @@ async def discover_cc_skills() -> list[str]:
         await proc.stdin.drain()
         proc.stdin.close()
 
+        found: list[list[str]] = []
+
         async def read_init():
             async for line in proc.stdout:
                 try:
@@ -2515,9 +2520,16 @@ async def discover_cc_skills() -> list[str]:
                 except ValueError:
                     continue
                 if ev.get("type") == "system" and ev.get("subtype") == "init":
-                    return ev.get("skills") or []
-            return None
-        skills = await asyncio.wait_for(read_init(), 60)
+                    found.append(ev.get("skills") or [])
+                elif ev.get("type") == "result":
+                    break
+            await proc.wait()  # exits on its own after the result, credentials saved
+        try:
+            await asyncio.wait_for(read_init(), 90)
+        except asyncio.TimeoutError:  # a stuck model call: the list came already, only then is it stopped
+            if not found:
+                raise
+        skills = found[0] if found else None
     except Exception as e:  # anything (binary gone, odd output): callers such as /skills must still answer
         log.warning("Couldn't list Claude Code's skills: %s: %s", type(e).__name__, e)
         skills = None
