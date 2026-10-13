@@ -341,8 +341,9 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
     finally:
         sender.cancel()
         inp.release()
-        if _viewer is ws:
+        if _viewer is ws:  # nobody took over: free the capture's screen-sized buffers until the next viewer
             _viewer = None
+            await loop.run_in_executor(_pool, _reset_capture)
         minutes = (time.monotonic() - started) / 60
         core.note_event("bot", f"Screen control closed ({who}, {minutes:.0f} min)")
         log.info("Screen control closed (%s, %.1f min)", who, minutes)
