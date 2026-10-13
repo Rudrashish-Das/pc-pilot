@@ -3,7 +3,7 @@ move the real mouse) on the chosen screen, the real pointer drawn into a frame (
 WebSocket's sign-in/origin checks, frames only on request (at most IN_FLIGHT_MAX ahead) and only when something
 changed, the arrow / real / both pointer modes, switching screens, held keys and buttons let go when the viewer leaves,
 one viewer at a time, and the reasons it refuses. Real capture of each screen is tried too when there is a desktop."""
-import asyncio, ctypes, os, sys
+import asyncio, ctypes, os, sys, time
 
 os.environ["DASHBOARD_PORT"] = "0"
 from _setup import B, TMP  # noqa  (first: isolates the bot)
@@ -191,7 +191,43 @@ async def main():
     except Exception as e:  # e.g. CI without a desktop: the WebSocket checks below use a stand-in
         print(f"  (skipped: {type(e).__name__}: {e})")
 
+    print("== the capture process")
+    import psutil
+    try:
+        mon = SCR.monitors()[0]
+        ref = {}
+        t0 = time.monotonic()
+        parts, w, h, size, ms = SCR._call(("grab", 1, mon, 960, 50, False, None, True))
+        first = time.monotonic() - t0
+        check(parts and parts[0][4][:2] == b"\xff\xd8" and SCR._proc.is_alive(),
+              f"a frame from the capture process (started in {first:.1f} s)")
+        times = []
+        for _ in range(20):
+            t0 = time.monotonic()
+            SCR._call(("grab", 1, mon, 960, 50, False, None, True))
+            times.append(time.monotonic() - t0)
+        print(f"  ok   whole frames through it: {sum(times) / len(times) * 1000:.0f} ms each")
+        pid = SCR._proc.pid
+        psutil.Process(pid).kill()  # it crashed
+        try:
+            SCR._call(("grab", 1, mon, 960, 50, False, None, True))
+            check(False, "a dead process is noticed")
+        except RuntimeError as e:
+            check("stopped" in str(e) and SCR._proc is None, f"a dead process is noticed ({e})")
+        parts, *_ = SCR._call(("grab", 1, mon, 960, 50, False, None, True))
+        check(parts and SCR._proc.pid != pid, "and the next frame starts a fresh one")
+        SCR._call(("done", 1))
+        pid = SCR._proc.pid
+        SCR._stop_worker()
+        check(not psutil.pid_exists(pid) and SCR._proc is None, "stopped: the process is gone")
+    except AssertionError:
+        raise
+    except Exception as e:  # CI without a desktop
+        print(f"  (skipped: {type(e).__name__}: {e})")
+        SCR._stop_worker()
+
     print("== WebSocket")
+    SCR.WORKER = False  # the stand-in grab() below runs in this process
     G = {"static": False, "n": 0, "calls": []}
 
     def fake_grab(mon, width, quality, fresh_only, draw, ref, full):
@@ -415,5 +451,6 @@ async def main():
     await runner.cleanup()
 
 
-asyncio.run(main())
-print("\nALL SCREEN CHECKS PASSED")
+if __name__ == "__main__":  # not in the capture process, which imports this file again
+    asyncio.run(main())
+    print("\nALL SCREEN CHECKS PASSED")

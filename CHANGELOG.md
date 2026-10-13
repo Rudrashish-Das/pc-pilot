@@ -15,6 +15,7 @@ Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `
   - Only the parts of the screen that changed are sent (64 px tiles, drawn over what the phone has), so a casual game uses a fraction of the Wi-Fi: about 1.5 Mbit/s instead of 12 at Medium in testing, and a pointer move is a few KB instead of a whole frame.
   - The phone's screen stays on while streaming, as with a video (Wake Lock on https; a tiny silent looping video on plain http).
   - The sound's buffer adapts: a dropout makes it a little longer (up to 0.25 s), and it shrinks back while the Wi-Fi is steady.
+  - Capture and encoding run in their own process (started with the first viewer, gone 2 minutes after the last): inside the bot they took turns with everything else for Python's interpreter lock, 57 ms a frame instead of 17. A stuck capture can't freeze the stream any more: the process is replaced.
   - A stats line while streaming: fps, Mbit/s, and the time per frame on the PC and on the phone (also on the Now tab).
   - `DASHBOARD_SCREEN=false` turns it off.
   - New dependencies: `mss`, `Pillow`, `dxcam` and `soundcard` (`pip install -r requirements.txt`).

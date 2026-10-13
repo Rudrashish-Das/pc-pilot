@@ -867,6 +867,11 @@ async def start(core_module) -> None:
 async def stop() -> None:
     global _runner, _mdns_task, _https_on
     _https_on = False
+    if "llmbot.screen" in sys.modules:  # the Screen tab's capture process
+        try:
+            await asyncio.to_thread(sys.modules["llmbot.screen"].shutdown)
+        except Exception:
+            pass
     if _mdns_task is not None:
         _mdns_task.cancel()
         _mdns_task = None

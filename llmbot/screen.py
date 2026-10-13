@@ -400,6 +400,120 @@ def _reset_capture() -> None:
     _cap = None
 
 
+# ---- the capture process ----------------------------------------------------------------------------------------
+# Capture, scaling, diffing and JPEG run in their own process: in the bot's, the capture thread takes turns with
+# the event loop, Discord, Telegram and the sound for Python's one interpreter lock, which made the same frame take
+# 57 ms instead of 17 (measured). The process starts with the first viewer and stops WORKER_IDLE seconds after the
+# last one leaves; a frame that takes longer than WORKER_TIMEOUT (a stuck capture) kills it, and the next frame
+# starts a fresh one. Its frames (a few KB of JPEG) come back over a pipe. The pipe calls are made on _pool, so
+# requests stay in order; the process keeps each viewer's last frame itself (ref), to send only what changed.
+
+WORKER = sys.platform == "win32"  # False: grab() in this process (the tests' stand-in)
+WORKER_TIMEOUT = 10.0
+WORKER_IDLE = 120.0
+_proc: Any = None
+_conn: Any = None
+
+
+def _worker_main(conn) -> None:
+    """The capture process: requests in, results out, until the bot closes the pipe (or exits)."""
+    refs: dict[Any, dict] = {}
+    while True:
+        try:
+            msg = conn.recv()
+        except (EOFError, OSError):
+            break
+        try:
+            if msg[0] == "grab":
+                _, sid, mon, width, quality, fresh_only, draw, full = msg
+                out = grab(mon, width, quality, fresh_only, draw, refs.setdefault(sid, {}), full)
+            elif msg[0] == "done":  # a viewer left: its last frame and the capture go
+                refs.pop(msg[1], None)
+                _reset_capture()
+                out = None
+            else:
+                out = None
+            conn.send(("ok", out))
+        except Exception as e:
+            conn.send(("error", f"{type(e).__name__}: {e}"))
+    _reset_capture()
+
+
+def _call(msg: tuple) -> Any:
+    """One request to the capture process, starting it if needed (on _pool)."""
+    global _proc, _conn
+    if _proc is None or not _proc.is_alive():
+        _stop_worker()
+        import multiprocessing
+
+        ctx = multiprocessing.get_context("spawn")
+        parent, child = ctx.Pipe()
+        _proc = ctx.Process(target=_worker_main, args=(child,), name="screen-capture", daemon=True)
+        _proc.start()
+        child.close()
+        _conn = parent
+        log.info("Screen capture process started (pid %s)", _proc.pid)
+    try:
+        _conn.send(msg)
+        if not _conn.poll(WORKER_TIMEOUT if msg[0] == "grab" else 3):
+            raise TimeoutError(f"no answer in {WORKER_TIMEOUT:.0f} s")
+        status, out = _conn.recv()
+    except (EOFError, OSError, TimeoutError) as e:
+        log.warning("Screen capture process failed (%s: %s); a new one starts with the next frame",
+                    type(e).__name__, e)
+        _stop_worker()
+        raise RuntimeError(f"the capture process stopped: {e}") from None
+    if status == "error":
+        raise RuntimeError(out)
+    return out
+
+
+def _stop_worker() -> None:
+    global _proc, _conn
+    conn, proc, _conn, _proc = _conn, _proc, None, None
+    if conn is not None:
+        try:
+            conn.close()  # the process sees the pipe close and exits
+        except OSError:
+            pass
+    if proc is not None:
+        proc.join(3)
+        if proc.is_alive():
+            proc.kill()
+            proc.join(3)
+        log.info("Screen capture process stopped")
+
+
+def _capture(sid: Any, ref: dict, mon: dict, width: int, quality: int, fresh_only: bool,
+             draw: tuple[int, int, int] | None, full: bool):
+    """grab(), in the capture process (or here when WORKER is off). On _pool."""
+    if WORKER:
+        return _call(("grab", sid, mon, width, quality, fresh_only, draw, full))
+    return grab(mon, width, quality, fresh_only, draw, ref, full)
+
+
+def _done(sid: Any) -> None:
+    """A viewer left: drop its last frame and free the capture (on _pool)."""
+    if WORKER:
+        if _proc is not None and _proc.is_alive():
+            try:
+                _call(("done", sid))
+            except RuntimeError:
+                pass
+    else:
+        _reset_capture()
+
+
+def _stop_if_idle() -> None:
+    if _viewer is None:
+        _stop_worker()
+
+
+def shutdown() -> None:
+    """The bot is stopping."""
+    _pool.submit(_stop_worker).result(10)
+
+
 # ---- input (SendInput) ----------------------------------------------------------------------------------------
 
 if sys.platform == "win32":
@@ -627,6 +741,7 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
     log.info("Screen control opened from %s (%s)", device, who)
 
     loop = asyncio.get_running_loop()
+    sid = id(ws)
     mons = monitors()
     st = {"quality": "medium", "fps": 30, "mon": mons[0], "mon_i": 0, "cursor": "arrow", "credits": 0, "force": True}
     sent: deque = deque(maxlen=FPS_MAX * 3)  # (time, bytes, ms) of recent frames, for status()
@@ -653,15 +768,16 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
             full = st["force"] or time.monotonic() - last_full > REFRESH
             try:
                 parts, w, h, size, ms = await loop.run_in_executor(
-                    _pool, grab, mon, width, quality, not (full or redraw), ptr if real and pos is not None else None,
-                    ref, full)
+                    _pool, _capture, sid, ref, mon, width, quality, not (full or redraw),
+                    ptr if real and pos is not None else None, full)
             except Exception as e:  # locked, UAC prompt, display mode change
                 if not failing:
                     log.info("Screen capture failed: %s: %s", type(e).__name__, e)
                     await ws.send_json({"status": "Can't see the screen right now (locked, a UAC prompt, or the "
                                                   "display changing). Retrying…"})
                 failing = True
-                await loop.run_in_executor(_pool, _reset_capture)
+                ref.clear()
+                await loop.run_in_executor(_pool, _done, sid)  # start over: a new capture, then a whole frame
                 await asyncio.sleep(1)
                 continue
             if failing:
@@ -738,9 +854,10 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
         except (asyncio.CancelledError, Exception):
             pass
         inp.release()
-        if _viewer is ws:  # nobody took over: free the capture (GPU duplication, screen-sized buffers)
+        await loop.run_in_executor(_pool, _done, sid)  # its last frame, and the capture (GPU duplication, buffers)
+        if _viewer is ws:
             _viewer = _session = None
-            await loop.run_in_executor(_pool, _reset_capture)
+            loop.call_later(WORKER_IDLE, lambda: loop.run_in_executor(_pool, _stop_if_idle))
         minutes = (time.monotonic() - started) / 60
         core.note_event("bot", f"Screen control closed ({device}, {who}, {minutes:.0f} min)")
         log.info("Screen control closed (%s, %s, %.1f min)", device, who, minutes)
