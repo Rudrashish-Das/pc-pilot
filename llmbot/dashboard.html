@@ -1295,6 +1295,7 @@ window.addEventListener("resize", sizeChat);
 // Touch mode: tap = click there, drag = drag, long press = right click. Trackpad mode: drag moves the pointer, tap =
 // click, tap then touch again and hold = the button held (drag with it, or lift at once for a double click). Both: two fingers = scroll, two-finger tap = right click. A mouse on a PC browser works as itself.
 const SCR_KEYS = "Esc Enter Space Left Up Down Right";
+const TAP_WAIT = 280;  // ms a trackpad tap's click waits for a second touch (tap-and-drag), as laptop trackpads do
 const KEY_LABEL = { esc: "Esc", escape: "Esc", enter: "⏎", space: "Space", left: "←", up: "↑", down: "↓", right: "→",
   backspace: "⌫", tab: "Tab" };
 const SC = { bytes: 0, pcMs: 0, drawMs: 0, head: null, chain: Promise.resolve(), ws: null, mode: "touch", quality: "medium", fps: 30, cur: "arrow", mon: 0, keys: null, size: [16, 9], cursor: null, retry: 0,
@@ -1492,13 +1493,19 @@ stage.addEventListener("pointerdown", (e) => {
       if (navigator.vibrate) navigator.vibrate(15);
     }, 550);
     // Trackpad: tap, then touch again at once (like a laptop's): the button stays down while the finger does.
-    // Lift without moving = a double click; move = drag; keep still = hold.
-    const last = SC.lastTap;
-    SC.lastTap = null;
-    if (SC.mode === "trackpad" && !SC.hold && last && g.t - last.t < 350 && Math.hypot(g.sx - last.x, g.sy - last.y) < 50) {
-      g.held = true;
-      scrSend({ t: "down", b: "left" });
-      if (navigator.vibrate) navigator.vibrate(10);
+    // Move = drag; keep still = hold; lift at once = a double click. The tap's own click was held back (TAP_WAIT)
+    // for this: sent first, it would make the press a double click, which maximizes a window by its title bar.
+    const last = SC.tap;
+    SC.tap = null;
+    if (last) {
+      clearTimeout(last.timer);
+      if (SC.mode === "trackpad" && !SC.hold && Math.hypot(g.sx - last.x, g.sy - last.y) < 50) {
+        g.held = true;
+        scrSend({ t: "down", b: "left" });
+        if (navigator.vibrate) navigator.vibrate(10);
+      } else {
+        scrSend({ t: "click", b: "left" });  // somewhere else: that tap was just a click
+      }
     }
   } else if (SC.g && !SC.g.two) {
     clearTimeout(SC.g.timer);
@@ -1556,11 +1563,18 @@ function scrUp(e) {
     if (!g.moved && quick && !cancel) scrSend({ t: "click", b: "right", ...(SC.mode === "touch" ? g.at : {}) });
   } else {
     clearTimeout(g.timer);
-    if (g.held) scrSend({ t: "up", b: "left" });
+    if (g.held) {
+      scrSend({ t: "up", b: "left" });
+      if (!g.moved && quick) scrSend({ t: "click", b: "left" });  // a double tap: the second click of a double click
+    }
     else if (g.dragging) { if (!SC.hold) scrSend({ t: "up", b: "left", ...scrAt(e.clientX, e.clientY) }); }
     else if (cancel || g.long || g.moved) { /* nothing */ }
     else if (SC.mode === "touch") scrSend(SC.hold ? { t: "move", ...g.at } : { t: "click", b: "left", ...g.at });
-    else if (quick && !SC.hold) { scrSend({ t: "click", b: "left" }); SC.lastTap = { t: performance.now(), x: g.sx, y: g.sy }; }
+    else if (quick && !SC.hold) {  // a tap: its click waits a moment in case the finger comes back (see pointerdown)
+      const tap = { x: g.sx, y: g.sy };
+      tap.timer = setTimeout(() => { if (SC.tap === tap) { SC.tap = null; scrSend({ t: "click", b: "left" }); } }, TAP_WAIT);
+      SC.tap = tap;
+    }
   }
   SC.g = null;
 }
