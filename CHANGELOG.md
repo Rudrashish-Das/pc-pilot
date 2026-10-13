@@ -6,10 +6,14 @@ Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `
 - 🎮 **Dashboard Screen tab**: the PC's screen on your phone, controlled by touch, for casual games and quick remote control over the same Wi-Fi.
   - Touch mode: tap clicks there, drag drags, long press right-clicks. Trackpad mode: drag moves the pointer, tap clicks. Two fingers scroll; a two-finger tap right-clicks. ✊ Hold keeps the left button down. A mouse on a PC browser works as itself.
   - ⌨️ types with the phone's keyboard. The key bar is yours to choose (✎): any letters, Esc, Enter, arrows, F-keys, combinations like Alt+Tab, held down as long as your finger is on them, so walking with arrows or WASD works.
-  - Full screen (landscape on Android; the bar tucks away), Low/Medium/High quality and a frame-rate cap. Frames are sent one at a time as the phone is ready and only when something changed, so a slow connection gets fewer frames instead of falling behind. About 10-25 fps.
-  - Shows the main monitor. It can't show the lock screen or UAC prompts, can't click into programs run as administrator (unless the bot is too), and some exclusive-fullscreen games show black: use borderless or windowed mode. Fast action games want Sunshine + Moonlight instead.
-  - One viewer at a time; held keys and buttons are let go when the phone disconnects. Opening and closing it is in the activity feed. `DASHBOARD_SCREEN=false` turns it off.
-  - New dependencies: `mss` and `Pillow` (`pip install -r requirements.txt`).
+  - Any of the PC's screens (a picker appears with more than one); touches land on the one shown.
+  - Mouse pointer: an arrow drawn by the phone (moves at once), the real one drawn into the picture as it looks on the PC (hand, text cursor, a game's own), or both, like AnyDesk. Hidden when Windows hides it, as many games do.
+  - 🔊 Sound: what the PC is playing, on the phone, about 0.1 s behind (~1.5 Mbit/s while something plays; silence isn't sent). The PC keeps playing it too.
+  - Full screen (landscape on Android; the bar tucks away), Low/Medium/High quality, 15/30/60 fps. Captured on the GPU (DXGI, a few ms a frame, nothing to do while the screen is still), with GDI as the fallback. Two frames are on their way at a time, so the Wi-Fi's round trip doesn't slow it down, and frames only go when something changed, so a slow connection gets fewer frames instead of falling behind. About 20-30 fps over home Wi-Fi.
+  - One device at a time. Another one sees who's watching (which phone or PC, since when) with a Take over button, and starts by itself once the screen is free; the same device coming back (a reload) just reconnects. Held keys and buttons are let go when a device disconnects. The Now tab shows who's watching, on which screen, the frame rate and bitrate, and whether sound is on; the activity feed has each open and close with the device.
+  - It can't show the lock screen or UAC prompts (the picture comes back by itself after), can't click into programs run as administrator (unless the bot is too), and a few exclusive-fullscreen games show black: use borderless or windowed mode. Fast action games want Sunshine + Moonlight instead.
+  - `DASHBOARD_SCREEN=false` turns it off.
+  - New dependencies: `mss`, `Pillow`, `dxcam` and `soundcard` (`pip install -r requirements.txt`).
 
 ## 0.25.0
 - Docs: a [beginner guide](docs/BEGINNER_GUIDE.md) (Telegram, step by step, no coding), and README instructions for running Claude Code on free cloud models: OpenRouter `:free` models, Ollama Cloud, or other free keys through a LiteLLM proxy.

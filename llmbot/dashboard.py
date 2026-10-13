@@ -33,7 +33,16 @@ log = logging.getLogger("llmbot.dashboard")
 COOKIE = "llmbot_dashboard"
 PAGE = Path(__file__).with_name("dashboard.html")
 IMAGES = {"/logo.png": Path(__file__).with_name("dashboard_logo.png"),  # also the phone home-screen icon
-          "/favicon.png": Path(__file__).with_name("dashboard_favicon.png")}
+          "/favicon.png": Path(__file__).with_name("dashboard_favicon.png"),
+          "/logo512.png": Path(__file__).with_name("dashboard_logo512.png")}
+# Lets Chrome install the page as an app (its own window and icon) rather than only a shortcut. Chrome still needs a
+# secure origin for that: https with a trusted certificate, localhost, or the insecure-origin flag (README).
+MANIFEST = {
+    "name": "pc-pilot dashboard", "short_name": "pc-pilot", "id": "/", "start_url": "/", "scope": "/",
+    "display": "standalone", "background_color": "#0f1115", "theme_color": "#0f1115",
+    "icons": [{"src": "/logo.png", "sizes": "192x192", "type": "image/png"},
+              {"src": "/logo512.png", "sizes": "512x512", "type": "image/png"}],
+}
 _CGNAT = ipaddress.ip_network("100.64.0.0/10")  # Tailscale and carrier NAT
 HEADERS = {
     "Cache-Control": "no-store",
@@ -469,6 +478,7 @@ async def state(request: web.Request) -> dict:
         **heavy,
         "now": time.time(), "timezone": core.TIMEZONE,
         "screen": core.DASHBOARD_SCREEN and sys.platform == "win32",
+        "screen_live": screen_status(),
         "bot": {"version": core.__version__, "started": core.STARTED_AT, "pid": os.getpid(),
                 "storage": core.STORE.describe(), "claude": core.CLAUDE_VERSION, "frontends": frontends(),
                 "default_engine": core.DEFAULT_ENGINE, "local_model": core.LLM_MODEL,
@@ -701,6 +711,12 @@ async def chat_file(request: web.Request) -> web.StreamResponse:
         "Content-Security-Policy": "sandbox", "X-Content-Type-Options": "nosniff"})
 
 
+def screen_status() -> dict | None:
+    """Who's watching the Screen tab, if anyone (llmbot/screen.py is only loaded once someone opens it)."""
+    mod = sys.modules.get("llmbot.screen")
+    return mod.status() if mod else None
+
+
 async def screen_ws(request: web.Request) -> web.StreamResponse:
     """The Screen tab's stream and input (llmbot/screen.py). Same-origin only: a WebSocket isn't covered by CORS."""
     if not _authed(request):
@@ -711,6 +727,18 @@ async def screen_ws(request: web.Request) -> web.StreamResponse:
     from llmbot import screen
 
     return await screen.serve(request, core)
+
+
+async def screen_audio_ws(request: web.Request) -> web.StreamResponse:
+    """The Screen tab's sound, for the device that's watching (llmbot/screen.py)."""
+    if not _authed(request):
+        return web.json_response({"error": "not signed in"}, status=401)
+    origin = request.headers.get("Origin")
+    if origin and urlsplit(origin).netloc != request.host:
+        return web.json_response({"error": "cross-site request refused"}, status=403)
+    from llmbot import screen
+
+    return await screen.serve_audio(request, core)
 
 
 webchat: Any = None  # llmbot.webchat once started
@@ -734,12 +762,15 @@ def make_app() -> web.Application:
     app.router.add_get("/", page)
     for route, path in IMAGES.items():  # no key needed: the login page shows them too
         app.router.add_get(route, lambda request, path=path: web.FileResponse(path, headers={"Cache-Control": "max-age=86400"}))
+    app.router.add_get("/manifest.webmanifest", lambda request: web.json_response(  # fetched without the cookie
+        MANIFEST, content_type="application/manifest+json", headers={"Cache-Control": "max-age=86400"}))
     app.router.add_post("/login", login)
     app.router.add_get("/api/state", api(state))
     app.router.add_get("/api/events", api(events))
     app.router.add_get("/api/jobs", api(jobs))
     app.router.add_get("/api/log", api(logtail))
     app.router.add_get("/api/screen", screen_ws)
+    app.router.add_get("/api/screen/audio", screen_audio_ws)
     return app
 
 
@@ -874,7 +905,7 @@ def link_text(angle: bool = True) -> str:
 
 
 LOGIN = """<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Bot dashboard</title><link rel="icon" type="image/png" href="/favicon.png"><link rel="apple-touch-icon" href="/logo.png">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Bot dashboard</title><link rel="icon" type="image/png" href="/favicon.png"><link rel="apple-touch-icon" href="/logo.png"><link rel="manifest" href="/manifest.webmanifest">
 <meta name="color-scheme" content="light dark">
 <style>body{font:16px system-ui,sans-serif;margin:0;min-height:100vh;display:grid;place-items:center;
 background:Canvas;color:CanvasText}form{width:min(92vw,360px);display:grid;gap:12px}
