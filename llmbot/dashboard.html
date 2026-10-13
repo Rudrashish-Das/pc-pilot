@@ -389,7 +389,7 @@ dialog .row { justify-content: flex-end; }
         <button class="btn" id="scr-tuck" title="Hide or show these buttons">▾</button>
         <button class="btn" id="scr-full" title="Full screen">⛶</button>
         <select id="scr-mon" class="hide" title="Which screen"></select>
-        <button class="btn" id="scr-mode" title="Touch: tap where you want to click. Trackpad: drag to move the pointer, tap to click."></button>
+        <button class="btn" id="scr-mode" title="Touch: tap where you want to click, drag to drag, long press for a right click. Trackpad: drag to move the pointer, tap to click, tap then touch again and hold to hold the button (drag with it)."></button>
         <button class="btn" id="scr-hold" title="Keep the left mouse button pressed (drag things in trackpad mode)">✊ Hold</button>
         <button class="btn" id="scr-audio" title="Sound: what the PC is playing, on this device">🔇</button>
         <button class="btn" id="scr-kbd" title="Type on the PC with the phone's keyboard">⌨️</button>
@@ -1293,7 +1293,7 @@ window.addEventListener("resize", sizeChat);
 
 // ---- screen: the PC's screen, touches sent back as mouse and keyboard (llmbot/screen.py)
 // Touch mode: tap = click there, drag = drag, long press = right click. Trackpad mode: drag moves the pointer, tap =
-// click. Both: two fingers = scroll, two-finger tap = right click. A mouse on a PC browser works as itself.
+// click, tap then touch again and hold = the button held (drag with it, or lift at once for a double click). Both: two fingers = scroll, two-finger tap = right click. A mouse on a PC browser works as itself.
 const SCR_KEYS = "Esc Enter Space Left Up Down Right";
 const KEY_LABEL = { esc: "Esc", escape: "Esc", enter: "⏎", space: "Space", left: "←", up: "↑", down: "↓", right: "→",
   backspace: "⌫", tab: "Tab" };
@@ -1491,9 +1491,18 @@ stage.addEventListener("pointerdown", (e) => {
       scrSend({ t: "click", b: "right", ...g.at });
       if (navigator.vibrate) navigator.vibrate(15);
     }, 550);
+    // Trackpad: tap, then touch again at once (like a laptop's): the button stays down while the finger does.
+    // Lift without moving = a double click; move = drag; keep still = hold.
+    const last = SC.lastTap;
+    SC.lastTap = null;
+    if (SC.mode === "trackpad" && !SC.hold && last && g.t - last.t < 350 && Math.hypot(g.sx - last.x, g.sy - last.y) < 50) {
+      g.held = true;
+      scrSend({ t: "down", b: "left" });
+      if (navigator.vibrate) navigator.vibrate(10);
+    }
   } else if (SC.g && !SC.g.two) {
     clearTimeout(SC.g.timer);
-    if (SC.g.dragging && !SC.hold) scrSend({ t: "up", b: "left" });
+    if ((SC.g.dragging || SC.g.held) && !SC.hold) scrSend({ t: "up", b: "left" });
     const m = scrMid();
     SC.g = { two: true, t: performance.now(), moved: false, px: m.x, py: m.y, ax: 0, ay: 0, at: scrAt(m.x, m.y) };
   }
@@ -1547,10 +1556,11 @@ function scrUp(e) {
     if (!g.moved && quick && !cancel) scrSend({ t: "click", b: "right", ...(SC.mode === "touch" ? g.at : {}) });
   } else {
     clearTimeout(g.timer);
-    if (g.dragging) { if (!SC.hold) scrSend({ t: "up", b: "left", ...scrAt(e.clientX, e.clientY) }); }
+    if (g.held) scrSend({ t: "up", b: "left" });
+    else if (g.dragging) { if (!SC.hold) scrSend({ t: "up", b: "left", ...scrAt(e.clientX, e.clientY) }); }
     else if (cancel || g.long || g.moved) { /* nothing */ }
     else if (SC.mode === "touch") scrSend(SC.hold ? { t: "move", ...g.at } : { t: "click", b: "left", ...g.at });
-    else if (quick && !SC.hold) scrSend({ t: "click", b: "left" });
+    else if (quick && !SC.hold) { scrSend({ t: "click", b: "left" }); SC.lastTap = { t: performance.now(), x: g.sx, y: g.sy }; }
   }
   SC.g = null;
 }

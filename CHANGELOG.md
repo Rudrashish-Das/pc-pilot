@@ -4,7 +4,7 @@ Before 0.23.0, each version was a separate file (`bot.py`, then `bot_v2.py` to `
 
 ## Unreleased
 - 🎮 **Dashboard Screen tab**: the PC's screen on your phone, controlled by touch, for casual games and quick remote control over the same Wi-Fi.
-  - Touch mode: tap clicks there, drag drags, long press right-clicks. Trackpad mode: drag moves the pointer, tap clicks. Two fingers scroll; a two-finger tap right-clicks. ✊ Hold keeps the left button down. A mouse on a PC browser works as itself.
+  - Touch mode: tap clicks there, drag drags, long press right-clicks. Trackpad mode: drag moves the pointer, tap clicks. Tap, then touch again and hold: the button stays down while your finger does (drag with it, or lift at once for a double click), as on a laptop's trackpad. Two fingers scroll; a two-finger tap right-clicks. ✊ Hold keeps the left button down. A mouse on a PC browser works as itself.
   - ⌨️ types with the phone's keyboard. The key bar is yours to choose (✎): any letters, Esc, Enter, arrows, F-keys, combinations like Alt+Tab, held down as long as your finger is on them, so walking with arrows or WASD works.
   - Any of the PC's screens (a picker appears with more than one); touches land on the one shown.
   - Mouse pointer: an arrow drawn by the phone (moves at once), the real one drawn into the picture as it looks on the PC (hand, text cursor, a game's own), or both, like AnyDesk. Hidden when Windows hides it, as many games do.
