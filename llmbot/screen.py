@@ -882,6 +882,10 @@ def _record(loop: asyncio.AbstractEventLoop, put, stop: threading.Event, failed:
     import soundcard as sc
 
     warnings.filterwarnings("ignore", message="data discontinuity")  # the gaps when sound starts and stops
+    # COM for this thread: soundcard only sets it up in the thread that first imports it, and only when nothing
+    # set that thread up differently before (comtypes, as dxcam uses, makes it single-threaded): 0x800401f0
+    # otherwise, depending on what happened to load first.
+    com = ctypes.windll.ole32.CoInitializeEx(None, 0) in (0, 1)  # COINIT_MULTITHREADED; S_OK / S_FALSE
     try:
         speaker = sc.default_speaker()
         mic = sc.get_microphone(id=str(speaker.name), include_loopback=True)
@@ -895,6 +899,9 @@ def _record(loop: asyncio.AbstractEventLoop, put, stop: threading.Event, failed:
     except Exception as e:
         failed.append(e)
         loop.call_soon_threadsafe(put, None)
+    finally:
+        if com:
+            ctypes.windll.ole32.CoUninitialize()
 
 
 def _is_viewer(request: web.Request) -> bool:
