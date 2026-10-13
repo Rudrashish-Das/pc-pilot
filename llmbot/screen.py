@@ -956,7 +956,9 @@ async def serve_audio(request: web.Request, core) -> web.WebSocketResponse:
                 pcm = queue.popleft()
                 if pcm is None:
                     e = failed[0] if failed else None
-                    await ws.send_json({"error": f"Sound stopped: {type(e).__name__}: {e}"})
+                    why = ("the PC has no sound output (speakers or headphones) to listen to" if "0x80070490" in str(e)
+                           else f"{type(e).__name__}: {e}")
+                    await ws.send_json({"error": f"Sound stopped: {why}."})
                     await ws.close()
                     return
                 await ws.send_bytes(pcm)

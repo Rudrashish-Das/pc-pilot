@@ -405,13 +405,21 @@ async def main():
 
         print("== sound")
         import threading, time
-        stop, failed = threading.Event(), []
-        real = threading.Thread(target=SCR._record, args=(asyncio.get_running_loop(), lambda pcm: None, stop, failed))
-        real.start()
-        await asyncio.sleep(0.6)
-        stop.set()
-        await asyncio.get_running_loop().run_in_executor(None, real.join, 3)
-        check(not real.is_alive() and not failed, f"the real loopback recording starts and stops {failed or ''}")
+        try:
+            import soundcard
+            soundcard.default_speaker()
+            speakers = True
+        except Exception as e:  # e.g. CI: no audio device (0x80070490, element not found)
+            print(f"  (real recording skipped: no speakers: {type(e).__name__}: {e})")
+            speakers = False
+        if speakers:
+            stop, failed = threading.Event(), []
+            real = threading.Thread(target=SCR._record, args=(asyncio.get_running_loop(), lambda pcm: None, stop, failed))
+            real.start()
+            await asyncio.sleep(0.6)
+            stop.set()
+            await asyncio.get_running_loop().run_in_executor(None, real.join, 3)
+            check(not real.is_alive() and not failed, f"the real loopback recording starts and stops {failed or ''}")
 
         def fake_record(loop, put, stop, failed):
             while not stop.is_set():
