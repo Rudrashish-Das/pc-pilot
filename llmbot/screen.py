@@ -316,7 +316,16 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
                     await ws.send_bytes(jpeg)
             await asyncio.sleep(max(0.0, 1 / max(1, min(FPS_MAX, opts["fps"])) - (time.monotonic() - t0)))
 
-    sender = asyncio.create_task(frames())
+    async def frames_or_close() -> None:
+        try:
+            await frames()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # the connection dropped mid-send, or a bug: don't leave a page with a frozen picture
+            log.info("Screen stream stopped: %s", e)
+            await ws.close()
+
+    sender = asyncio.create_task(frames_or_close())
     try:
         async for msg in ws:
             if msg.type != WSMsgType.TEXT:
@@ -332,7 +341,9 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
             elif m.get("t") == "opts":
                 if m.get("quality") in QUALITY:
                     opts["quality"] = m["quality"]
-                opts["fps"] = max(1, min(FPS_MAX, int(m.get("fps") or opts["fps"])))
+                fps = m.get("fps")
+                if isinstance(fps, (int, float)):
+                    opts["fps"] = max(1, min(FPS_MAX, int(fps)))
             else:
                 try:
                     inp.handle(m)
@@ -340,6 +351,10 @@ async def serve(request: web.Request, core) -> web.WebSocketResponse:
                     log.debug("bad screen input %r: %s", m, e)
     finally:
         sender.cancel()
+        try:
+            await sender
+        except (asyncio.CancelledError, Exception):
+            pass
         inp.release()
         if _viewer is ws:  # nobody took over: free the capture's screen-sized buffers until the next viewer
             _viewer = None
